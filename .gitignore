@@ -1,0 +1,6 @@
+# Noise from editors and from ad-hoc backups (`cp file file.bak-<date>`).
+*~
+*.orig
+*.swp
+*.tmp
+*.bak-*

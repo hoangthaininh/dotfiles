@@ -1,0 +1,32 @@
+#!/usr/bin/env zsh
+# Read first for EVERY shell (including non-interactive scripts), so keep it to
+# env + PATH + ZDOTDIR only — nothing interactive.
+
+# XDG base dirs
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
+
+# Point zsh at ~/.config/zsh; .zprofile/.zshrc/.zlogin then load from there.
+export ZDOTDIR="$XDG_CONFIG_HOME/zsh"
+
+export EDITOR="${EDITOR:-vim}"
+export VISUAL="$EDITOR"
+export PAGER="${PAGER:-less}"
+export LESS="-R"
+export LANG="${LANG:-en_US.UTF-8}"
+export STARSHIP_CONFIG="$XDG_CONFIG_HOME/starship/starship.toml"
+
+# PATH lives here, not in .zprofile, because gnome-terminal runs a non-login shell.
+typeset -U path PATH
+path=(
+  "$HOME/.local/bin"
+  "$XDG_DATA_HOME/pnpm"       # pnpm >=11 puts the CLI + global bins directly in PNPM_HOME
+  "$XDG_DATA_HOME/pnpm/bin"   # legacy shims from older pnpm (wrangler, pn, ...)
+  "$HOME/.pyenv/bin"          # pyenv binary; the actual init is in conf.d/langs.zsh
+  $path
+)
+export PNPM_HOME="$XDG_DATA_HOME/pnpm"
+export NVM_DIR="$HOME/.nvm"
+export PYENV_ROOT="$HOME/.pyenv"
