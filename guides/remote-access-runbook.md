@@ -1,6 +1,6 @@
 # Remote access: điều khiển máy công ty (macOS) từ xa — Runbook
 
-**Phiên bản:** v4.9 · 22/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
+**Phiên bản:** v5.0 · 22/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
 **Máy đích:** macOS 15, Intel Core i5 (máy công ty) · iTerm2 tại bàn
 **Client:** Fedora 44 (máy cá nhân, đường chính) · iPhone (tuỳ chọn)
 
@@ -51,8 +51,8 @@ Fedora là [Phase 2](#phase-2--client-fedora-44), iPhone là [Phase 3](#phase-3-
 
 | | Hệ quả |
 |---|---|
-| **Cá nhân** | Bạn sửa được policy file → [Phase 6](#phase-6--một-chiều) khả thi |
-| **Công ty** | Không sửa được policy file (cần quyền admin); máy cá nhân của bạn hiện trong admin console của IT. Phase 6 phải nhờ IT |
+| **Cá nhân** | Toàn quyền. [Phase 6](#phase-6--một-chiều) chỉ cần một lệnh trên máy bạn |
+| **Công ty** | Máy cá nhân của bạn hiện trong admin console của IT. `--shields-up` vẫn tự làm được vì nó cục bộ; chỉ phần ACL mới cần IT |
 
 Khi đăng ký Tailscale, nếu được hỏi: **Role = Engineer**, **Primary reason = Personal or At-Home Use**. Chọn "Infrastructure Access" dễ bị đẩy vào trial gói trả phí — trial hết hạn giữa chừng là một cách bất ngờ để mất truy cập.
 
@@ -119,7 +119,7 @@ Duyệt **system extension** khi macOS hỏi.
 
 ```bash
 tailscale status
-tailscale ip -4          # ghi lại: 100.x.y.z  — dùng ở Phase 6
+tailscale ip -4          # ghi lại: 100.x.y.z
 ```
 
 ### 1.3 Trên Fedora 44
@@ -634,54 +634,88 @@ Control mode — tmux window thành iTerm2 tab native. Lưu ý điều kiện b�
 
 Mục tiêu: client chạm được Mac, **Mac không chạm được client nào**.
 
-Điều này quan trọng hơn hẳn so với khi client là iPhone. Một máy Fedora desktop thường có sshd, có thể có Samba, CUPS, dev server đang chạy — tức là có bề mặt thật để tấn công, khác với iPhone gần như không có service nào lắng nghe.
+Điều này quan trọng hơn khi client là máy Fedora chứ không phải iPhone. Một desktop Linux có sshd, có thể có Samba, CUPS, dev server đang chạy — bề mặt thật để tấn công, khác với iPhone gần như không có service nào lắng nghe.
 
-Chỉ làm được trên tailnet cá nhân. Rủi ro thấp: sai ACL không khoá bạn khỏi admin console, và mọi thay đổi nằm trong configuration audit logs để revert.
+### 6.1 Một lệnh, không phải một tệp ACL
 
-Admin console → **Access Controls** → thay toàn bộ phần `acls`:
+```bash
+sudo tailscale up --shields-up
+```
+
+Máy này vẫn **đi ra** bình thường (`ssh mac-cmp` chạy như cũ) nhưng không **nhận vào** từ bất kỳ node nào trong tailnet.
+
+Kiểm:
+
+```bash
+tailscale debug prefs | grep ShieldsUp     # → true
+ssh mac-cmp-file 'whoami'                  # vẫn phải chạy được
+```
+
+### 6.2 Vì sao không dùng ACL
+
+Bản trước của guide này dựng một tệp ACL trong admin console. Nó hoạt động, nhưng với tailnet cá nhân hai node thì đó là chọn sai công cụ:
+
+| | `--shields-up` | ACL |
+|---|---|---|
+| Thực thi ở | chính thiết bị | coordination server, toàn tailnet |
+| Công sức | một lệnh | sửa JSON trong admin console |
+| Rủi ro tự khoá mình | không — cục bộ, hoàn tác tức thì | có thật |
+| Phải sửa khi thêm port (mosh, VNC) | không | có, và quên là lỗi khó chẩn đoán |
+| Đúng tầm cho | tailnet cá nhân, ít node | nhiều người dùng, nhiều máy, cần phân nhóm |
+
+**Quay lại ACL khi nào:** tailnet có node của người khác, hoặc bạn cần chính sách áp cho mọi thiết bị kể cả khi ai đó cấu hình lại máy họ. Lúc đó `--shields-up` không đủ vì nó là thiết lập cục bộ — người dùng thiết bị tắt được.
+
+Cú pháp ACL cho trường hợp đó, giữ lại để tham khảo:
 
 ```json
 {
-  "hosts": {
-    "mac-cmp": "100.74.168.122"
-  },
+  "hosts": { "mac-cmp": "100.74.168.122" },
   "acls": [
-    {
-      "action": "accept",
-      "src": ["autogroup:member"],
-      "dst": ["mac-cmp:22"]
-    }
+    { "action": "accept", "src": ["autogroup:member"], "dst": ["mac-cmp:22"] }
   ]
 }
 ```
 
-Thay IP bằng kết quả `tailscale ip -4` ở Phase 1.2 nếu khác (giá trị trên là của `macos-comacpro` lúc viết).
+> `mac-cmp` ở đây là **nhãn nội bộ của ACL**, không liên quan tới DNS lẫn alias SSH cùng tên.
 
-> `mac-cmp` trong khối `hosts` là **nhãn nội bộ của ACL** — Tailscale tự gán nhãn đó cho một IP, nó không liên quan tới DNS và cũng không liên quan tới alias SSH cùng tên. Các tham chiếu `"mac-cmp:22"`, `"mac-cmp:5900"`, `"mac-cmp:60000-61000"` ở phần sau đều dùng nhãn này. Giữ nguyên.
+### 6.3 Ba thứ `--shields-up` KHÔNG giải quyết
 
-Một rule, đích duy nhất là Mac, port duy nhất là 22. Không rule nào lấy Fedora hay iPhone làm đích → **Mac không mở được kết nối nào tới chúng.** Traffic trả về của kết nối bạn khởi tạo vẫn chạy bình thường (ACL là stateful).
+**1. Cổng do Docker publish vẫn mở.** Đây là lỗ lớn nhất còn lại, và cả ACL lẫn shields-up đều không bịt được.
 
-Muốn SSH từ iPhone vào Fedora nữa thì thêm `tainjiao-dotdev` vào `hosts` và một dòng `"tainjiao-dotdev:22"` vào `dst`. Nhưng như vậy Mac cũng chạm được Fedora — ACL không phân biệt được nguồn ở mức thiết bị khi cả hai cùng một user. Muốn tách thật thì phải dùng tag, và tag có cái giá riêng (xem bảng quyết định mục 1).
+Docker ghi thẳng netfilter, bỏ qua firewalld. Và `--shields-up` chặn ở chain `INPUT` (traffic tới chính host), trong khi cổng Docker đi qua DNAT rồi `FORWARD` — đường khác hoàn toàn.
 
-> **Bật mosh hoặc Screen Sharing sau này thì phải thêm port vào đây.** Quên bước đó là lỗi khó chẩn đoán: SSH vẫn chạy, chỉ thứ mới là chết.
+Compose mặc định bind mọi interface:
 
-Tailscale có nút **Convert to grants** nếu muốn cú pháp thế hệ mới. ACL sẽ tiếp tục hoạt động vô thời hạn nhưng không nhận thêm tính năng.
-
-### Kiểm tra
-
-```bash
-# Trên Mac — phải FAIL (treo rồi timeout):
-ping tainjiao-dotdev
-
-# Trên Fedora — phải OK:
-ssh mac-cmp
+```yaml
+ports:
+  - "5530:5432"             # → 0.0.0.0:5530, cả LAN lẫn tailnet thấy
 ```
 
-### Ba giới hạn ACL không giải quyết
+Sửa bằng cách ghi rõ IP host:
 
-1. **ACL chỉ quản traffic qua tailnet.** Nếu Mac và Fedora từng ở chung một mạng LAN, chúng vẫn thấy nhau qua LAN. Với máy cá nhân ở nhà và máy công ty thì hiếm khi trùng, nhưng đừng nhầm ACL là tường lửa toàn diện. Fedora nên bật firewalld mặc định.
-2. **Mac vẫn biết các thiết bị khác tồn tại.** `tailscale status` hiện tên, IP, trạng thái online. ACL chặn kết nối, không ẩn danh sách.
-3. **Taildrop nhiều khả năng ngừng hoạt động.** Thử `tailscale file cp`; hỏng thì dùng `rsync` qua host `mac-cmp-file`.
+```yaml
+ports:
+  - "127.0.0.1:5530:5432"   # chỉ máy này
+```
+
+Đáng làm vì database dev thường dùng mật khẩu mặc định. Bỏ tiền tố chỉ khi thật sự cần truy cập từ máy khác, cho đúng service đó.
+
+Kiểm nhanh những gì đang mở:
+
+```bash
+ss -tuln | grep -vE '127\.0\.0\.1|::1'
+docker ps --format '{{.Names}}\t{{.Ports}}'
+```
+
+**2. ACL/shields chỉ quản traffic qua tailnet.** Mac và Fedora nếu từng ở chung LAN thì vẫn thấy nhau qua LAN. Firewalld giữ phần đó — để nó bật.
+
+**3. Mac vẫn biết các thiết bị khác tồn tại.** `tailscale status` hiện tên, IP, trạng thái online. Shields chặn kết nối, không ẩn danh sách.
+
+### 6.4 Đánh đổi
+
+**Taildrop nhận file sẽ hỏng** — `tailscale file cp` gửi *tới* máy này không còn nhận được. Gửi *đi* vẫn chạy. Dùng `rsync` qua `mac-cmp-file` thay thế, vốn đã là cách chuyển file chính trong guide này.
+
+Bỏ shields khi cần: `sudo tailscale up --shields-up=false`.
 
 ---
 
@@ -1274,7 +1308,7 @@ Bước 3 và 4 chứng minh tmux thực sự làm được việc của nó. B�
 [ ]  3  (tuỳ chọn) iPhone: Tailscale, tắt sync Termius, key, host
 [ ]  4  grep Include → viết config → sshd -T xác minh → test MỌI client → đóng tab
 [ ]  5  Mac: tmux + .tmux.conf
-[ ]  6  ACL một chiều
+[ ]  6  tailscale up --shields-up
 [ ]  7  git remote sang SSH; app GUI chạy sẵn
 [ ]  8  Cài preflight vào ~/bin; đặt PREFLIGHT_TMUX_SESSION=desk
 [ ]  9  Fedora: xác nhận LUKS; khoá màn hình; đọc runbook mất thiết bị
@@ -1411,7 +1445,7 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$REAL"
 
 ### B.3 Mở port trong ACL
 
-Thêm vào `dst` của Phase 6: `"mac-cmp:60000-61000"` (dải UDP của mosh).
+Với `--shields-up` ([Phase 6](#phase-6--một-chiều)) không cần mở port gì — shields chặn chiều vào máy này, còn mosh đi chiều ra tới Mac. Nếu bạn dùng ACL thay vì shields, thêm `"mac-cmp:60000-61000"` vào `dst`.
 
 Quên bước này → mosh chết trong khi SSH vẫn chạy, và bạn sẽ đi tìm nguyên nhân ở nhầm chỗ.
 
@@ -1438,7 +1472,7 @@ System Settings → General → Sharing → Screen Sharing → **(i)**:
 - "Allow access for" → **Only these users** → chỉ user của bạn
 - **KHÔNG đặt VNC password.** Đó là đường auth yếu — client chỉ bị hỏi password, không hỏi username — và chính nó góp phần vào lỗ hổng vừa rồi. Dùng xác thực bằng tài khoản macOS.
 
-Cấu hình xong thì **tắt Screen Sharing đi**. Thêm `"mac-cmp:5900"` vào ACL Phase 6.
+Cấu hình xong thì **tắt Screen Sharing đi**. Với `--shields-up` không cần khai báo thêm gì; nếu dùng ACL thì thêm `"mac-cmp:5900"` vào `dst`.
 
 ### C.2 Bật/tắt từ xa qua SSH
 
@@ -1500,7 +1534,7 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 | `Include` có trong `sshd_config` của macOS 15 không, và ở dòng nào | `grep` ở Phase 4.1 |
 | Nhãn menu trong System Settings có thể khác giữa các bản 15.x | Nhìn màn hình |
 | Nhãn `launchctl` cho screensharing (Phụ lục C.2) | `sudo lsof -iTCP:5900 -sTCP:LISTEN` sau khi chạy |
-| Taildrop có bị ACL Phase 6 chặn không | `tailscale file cp` sau khi áp dụng |
+| ~~Taildrop có bị ACL Phase 6 chặn không~~ — **đã biết:** `--shields-up` chặn chiều *nhận*, xem [6.4](#64-đánh-đổi) | `tailscale file cp` tới máy này sau khi bật shields |
 | Trường `Self.KeyExpiry` trong `tailscale status --json` (preflight dùng) | `tailscale status --json \| grep -i expiry`. Sai tên → check hiện "skip", không phá script |
 | ~~Hành vi của GNOME Keyring với `ssh-add -t` trên Fedora 44~~ — **đã xác minh 22/09/2026: tôn trọng `-t`** | Bài test 70 giây ở [2.6](#26-ssh-agent). Chạy lại nếu đổi máy hoặc đổi bản phân phối |
 | ~~GNOME Keyring có **tự nạp** key lúc đăng nhập hay không~~ — **đã xác minh 22/09/2026: không.** gcr chỉ *quảng bá* key từ đĩa, không mở khoá | So `ssh-add -l` với `SSH_AUTH_SOCK=/run/user/1000/gcr/.ssh ssh-add -l` — xem [2.6](#26-ssh-agent) |
@@ -1509,6 +1543,32 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 ---
 
 ## Thay đổi trong v4.1
+
+### v5.0 — Phase 6 đổi từ ACL sang `--shields-up`, và lỗ Docker
+
+**Phase 6 viết lại.** Bản cũ dựng một tệp ACL trong admin console. Nó chạy được, nhưng với tailnet cá nhân hai node thì sai công cụ: một lệnh cục bộ làm đúng việc đó, không có rủi ro tự khoá mình, và không phải sửa lại mỗi lần thêm port (mosh, VNC).
+
+```bash
+sudo tailscale up --shields-up
+```
+
+Cú pháp ACL giữ lại trong §6.2 cho trường hợp tailnet có node của người khác — lúc đó shields không đủ vì nó là thiết lập cục bộ, người dùng thiết bị tắt được.
+
+**Lỗ Docker — mục mới ở §6.3.** Kiểm 6 tệp compose trong `~/Workspace`: không tệp nào chỉ định IP host.
+
+```yaml
+- "5530:5432"      # Postgres  → 0.0.0.0:5530
+- "27018:27017"    # MongoDB   → 0.0.0.0:27018
+- "3307:3306"      # MySQL     → 0.0.0.0:3307
+```
+
+Docker ghi thẳng netfilter nên firewalld không chặn, và `--shields-up` cũng không: shields lọc ở chain `INPUT` còn cổng Docker đi qua DNAT rồi `FORWARD`. Cả ACL lẫn shields đều vô hiệu ở đây. Cách sửa duy nhất là ghi rõ `127.0.0.1:` trong compose.
+
+**Hệ quả với phần trước:** zone `FedoraWorkstation` chỉ mở `53317/tcp+udp` (LocalSend), nên các service nghe trên `0.0.0.0` vốn **đã** bị chặn ở wifi từ trước. Đường vào thật sự là `tailscale0` — interface không thuộc zone firewalld nào, và `ShieldsUp` khi đó là `False`. Đó mới là lý do đúng để bật shields, không phải "wifi quán cà phê".
+
+Sửa theo các tham chiếu chết: Phụ lục B.3 (mosh), C (Screen Sharing), checklist, bảng quyết định tailnet ở mục 1.
+
+---
 
 ### v4.9 — preflight: sửa 6 lỗi
 
