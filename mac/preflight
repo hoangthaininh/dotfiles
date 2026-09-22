@@ -1,0 +1,256 @@
+#!/bin/zsh
+#
+# preflight — kiểm tra & chuẩn bị Mac cho remote access trước khi rời bàn.
+#
+# Setup remote access hiếm khi hỏng vì cấu hình sai; nó hỏng vì máy ở sai
+# trạng thái đúng lúc cần: đã ngủ, đã logout, Docker chưa chạy, node key sắp
+# hết hạn. Script này đẩy việc phát hiện về lúc còn sửa được.
+#
+# Dùng:
+#   preflight            chỉ kiểm tra, không thay đổi gì
+#   preflight --arm      kiểm tra + bật caffeinate và tạo tmux session
+#   preflight --help     in trợ giúp
+#
+# Exit: 0 = sẵn sàng (có thể kèm cảnh báo) · 1 = có mục FAIL · 2 = sai tham số
+#
+# Chạy TRÊN MAC. Từ Fedora: `macstatus` / `macarm` (xem zsh/conf.d/aliases.zsh).
+#
+# Biến môi trường:
+#   PREFLIGHT_TMUX_SESSION   tên tmux session      (mặc định: desk)
+#   PREFLIGHT_WORKDIR        thư mục tạo session   (mặc định: $HOME)
+#   PREFLIGHT_CAFFEINATE     giây giữ máy thức     (mặc định: 28800 = 8h)
+#   NO_COLOR                 đặt bất kỳ giá trị nào để tắt màu
+#
+
+emulate -L zsh
+set -u
+
+# PATH tự lo, đừng tin PATH thừa kế.
+#
+# Phiên `ssh host <cmd>` là KHÔNG tương tác: zsh chỉ nạp .zshenv, bỏ qua
+# .zshrc. PATH lúc đó là /usr/bin:/bin:/usr/sbin:/sbin — không có
+# /usr/local/bin lẫn /opt/homebrew/bin. Thiếu dòng này thì tailscale, tmux
+# và docker đều "không tìm thấy", và script báo CHƯA SẴN SÀNG trên một máy
+# hoàn toàn khoẻ mạnh.
+export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
+
+# ------------------------------------------------------------------ tham số
+
+ARM=0
+case "${1:-}" in
+  --arm)      ARM=1 ;;
+  --help|-h)  sed -n '2,/^$/s/^# \{0,1\}//p' "$0"; exit 0 ;;
+  "")         ;;
+  *)          print -u2 -r -- "preflight: tham số lạ: $1 (dùng --help)"; exit 2 ;;
+esac
+
+SESSION="${PREFLIGHT_TMUX_SESSION:-desk}"
+WORKDIR="${PREFLIGHT_WORKDIR:-$HOME}"
+CAFFEINATE_SECONDS="${PREFLIGHT_CAFFEINATE:-28800}"
+
+FAIL=0
+WARN=0
+
+# Màu bật mặc định: đích dùng chính là `ssh mac-cmp-file preflight`, nơi
+# stdout là pipe nhưng người đọc vẫn là một terminal. Tôn trọng NO_COLOR.
+if [[ -n "${NO_COLOR:-}" ]]; then
+  G=""; Y=""; R=""; DIM=""; B=""; N=""
+else
+  G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; DIM=$'\e[2m'; B=$'\e[1m'; N=$'\e[0m'
+fi
+
+ok()   { print -r -- "  ${G}ok  ${N} $1" }
+warn() { print -r -- "  ${Y}warn${N} $1"; WARN=1 }
+bad()  { print -r -- "  ${R}FAIL${N} $1"; FAIL=1 }
+act()  { print -r -- "  ${B}-->${N}  $1" }
+skip() { print -r -- "  ${DIM}skip${N} $1" }
+sec()  { print -r -- ""; print -r -- "${DIM}$1${N}" }
+
+# ----------------------------------------------------------------- mạng
+
+sec "Mạng"
+
+if ! command -v tailscale >/dev/null 2>&1; then
+  bad "không tìm thấy tailscale trong PATH"
+elif tailscale status >/dev/null 2>&1; then
+  ok "tailscale up — $(tailscale ip -4 2>/dev/null | head -1)"
+
+  # Node key hết hạn = rơi khỏi tailnet, và re-auth cần GUI TẠI MÁY.
+  DAYS=$(tailscale status --json 2>/dev/null | python3 -c '
+import sys, json, datetime
+try:
+    exp = json.load(sys.stdin).get("Self", {}).get("KeyExpiry")
+    if not exp:
+        print("none"); sys.exit()
+    exp = exp.split(".")[0].rstrip("Z")
+    d = datetime.datetime.fromisoformat(exp) - datetime.datetime.utcnow()
+    print(d.days)
+except Exception:
+    print("?")
+' 2>/dev/null)
+
+  case "$DAYS" in
+    none)   warn "key expiry đã TẮT cho máy này — ở lại tailnet vô thời hạn" ;;
+    ''|\?)  skip "key expiry (không đọc được)" ;;
+    *)      if (( DAYS < 0 )); then
+              bad "node key ĐÃ HẾT HẠN — re-auth tại máy"
+            elif (( DAYS < 21 )); then
+              bad "node key hết hạn sau ${DAYS} ngày — re-auth TẠI MÁY trước khi đi xa"
+            else
+              ok "node key còn ${DAYS} ngày"
+            fi ;;
+  esac
+else
+  bad "tailscale down — chạy: tailscale up"
+fi
+
+# ------------------------------------------------------------------ ssh
+
+sec "Đường vào"
+
+if nc -z -G 2 localhost 22 >/dev/null 2>&1; then
+  ok "sshd đang nghe trên 22"
+else
+  bad "sshd không nghe — bật Remote Login trong System Settings"
+fi
+
+AK="$HOME/.ssh/authorized_keys"
+if [[ -f "$AK" ]]; then
+  # grep -c in ra "0" VÀ trả exit 1 khi không khớp; `|| echo 0` sẽ nối thêm
+  # một "0" nữa thành "0\n0". Bắt exit code riêng thay vì dùng ||.
+  KEYS=$(grep -c '^ssh-' "$AK" 2>/dev/null) || KEYS=0
+  PERM=$(stat -f '%OLp' "$AK" 2>/dev/null || print -r -- "?")
+  if [[ "$PERM" == "600" ]]; then
+    ok "authorized_keys: ${KEYS} key, quyền ${PERM}"
+  else
+    bad "authorized_keys quyền ${PERM} (phải 600) — chmod 600 $AK"
+  fi
+else
+  bad "không có $AK"
+fi
+
+if command -v sshd >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  PW=$(sudo -n sshd -T 2>/dev/null | awk '/^passwordauthentication/{print $2}')
+  [[ "$PW" == "no" ]] && ok "password auth: tắt" || warn "password auth: ${PW:-?} — xem lại harden"
+else
+  skip "password auth (cần sudo không mật khẩu)"
+fi
+
+# Screen Sharing: mong đợi là TẮT. Bật là bất thường.
+if nc -z -G 2 localhost 5900 >/dev/null 2>&1; then
+  warn "Screen Sharing ĐANG BẬT trên 5900 — tắt nếu không dùng"
+else
+  ok "Screen Sharing: tắt"
+fi
+
+# ------------------------------------------------------ trạng thái phiên
+
+sec "Phiên đăng nhập"
+
+if launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+  ok "GUI session còn sống (keychain mở được)"
+else
+  bad "KHÔNG có GUI session — đã đăng xuất. git/npm/docker qua SSH sẽ hỏng"
+fi
+
+KC="$HOME/Library/Keychains/login.keychain-db"
+if [[ -f "$KC" ]]; then
+  # Dùng EXIT CODE, không grep chữ "lock": output lúc keychain đang MỞ có
+  # chuỗi "lock-on-sleep", nên `grep -qi lock` báo động giả mỗi lần.
+  if security show-keychain-info "$KC" >/dev/null 2>&1; then
+    ok "login keychain mở"
+  else
+    warn "login keychain đang khoá — git/npm qua SSH có thể hỏng"
+  fi
+fi
+
+# ------------------------------------------------------------ nguồn/ngủ
+
+sec "Nguồn & giấc ngủ"
+
+if pmset -g ps 2>/dev/null | head -1 | grep -q 'AC Power'; then
+  ok "đang cắm nguồn"
+else
+  bad "đang chạy pin — cắm sạc, nếu không máy sẽ ngủ"
+fi
+
+if pgrep -x caffeinate >/dev/null 2>&1; then
+  ok "caffeinate đang chạy"
+elif (( ARM )); then
+  # nohup: khi chạy qua `ssh host <cmd>`, ssh đóng kênh ngay sau khi script
+  # thoát. Thiếu nohup thì caffeinate nhận SIGHUP và chết cùng phiên —
+  # đúng lúc bạn vừa bật nó để giữ máy thức.
+  nohup caffeinate -dims -t "$CAFFEINATE_SECONDS" >/dev/null 2>&1 &
+  disown
+  act "đã bật caffeinate (${CAFFEINATE_SECONDS}s)"
+else
+  warn "caffeinate chưa chạy — máy có thể ngủ. Dùng --arm để bật"
+fi
+
+DSLEEP=$(pmset -g 2>/dev/null | awk '/^[[:space:]]*sleep/{print $2; exit}')
+if [[ -z "$DSLEEP" ]]; then
+  skip "system sleep (không đọc được pmset)"
+elif [[ "$DSLEEP" == "0" ]]; then
+  ok "system sleep: tắt"
+else
+  warn "system sleep sau ${DSLEEP} phút — máy sẽ rơi khỏi tailnet"
+fi
+
+# Auto-install macOS update => reboot => FileVault pre-boot => mất máy.
+AUTOOS=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate \
+         AutomaticallyInstallMacOSUpdates 2>/dev/null || print -r -- "unset")
+case "$AUTOOS" in
+  1) bad  "macOS tự cài update → sẽ reboot → FileVault khoá bạn ra ngoài" ;;
+  0) ok   "auto-install macOS updates: tắt" ;;
+  *) warn "không đọc được cài đặt auto-update (có thể do MDM quản lý)" ;;
+esac
+
+# ------------------------------------------------------------ workspace
+
+sec "Workspace"
+
+if ! command -v tmux >/dev/null 2>&1; then
+  bad "chưa cài tmux — brew install tmux"
+elif tmux has-session -t "$SESSION" 2>/dev/null; then
+  W=$(tmux list-windows -t "$SESSION" 2>/dev/null | wc -l | tr -d ' ')
+  ok "tmux session '$SESSION' tồn tại (${W} window)"
+elif (( ARM )); then
+  tmux new-session -d -s "$SESSION" -c "$WORKDIR"
+  act "đã tạo tmux session '$SESSION' tại $WORKDIR"
+else
+  warn "chưa có tmux session '$SESSION' — dùng --arm để tạo"
+fi
+
+if command -v docker >/dev/null 2>&1; then
+  if docker info >/dev/null 2>&1; then
+    ok "docker daemon đang chạy"
+  else
+    warn "docker daemon chưa chạy — mở Docker Desktop TRƯỚC khi rời bàn"
+  fi
+else
+  skip "docker (chưa cài)"
+fi
+
+AVAIL=$(df -h / 2>/dev/null | awk 'NR==2{print $4}')
+PCT=$(df / 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
+if [[ -z "$PCT" ]]; then
+  skip "dung lượng đĩa (không đọc được df)"
+elif (( PCT > 90 )); then
+  bad "đĩa còn ${AVAIL} (đã dùng ${PCT}%)"
+else
+  ok "đĩa còn ${AVAIL}"
+fi
+
+# -------------------------------------------------------------- tổng kết
+
+print -r -- ""
+if (( FAIL )); then
+  print -r -- "${R}${B}CHƯA SẴN SÀNG${N} — sửa các mục FAIL ở trên."
+  exit 1
+elif (( WARN )); then
+  print -r -- "${Y}${B}SẴN SÀNG (có cảnh báo)${N} — đọc lại các mục warn."
+  exit 0
+else
+  print -r -- "${G}${B}SẴN SÀNG${N} — khoá màn hình, đừng đăng xuất, đừng reboot."
+  exit 0
+fi

@@ -45,6 +45,13 @@ alias reload='exec zsh'
 alias path='echo -e ${PATH//:/\\n}'
 alias ip='ip -color=auto'
 
+# Máy công ty (macOS qua Tailscale) — xem guides/remote-access-runbook.md
+# Đường dẫn tuyệt đối: phiên ssh không tương tác chỉ nạp .zshenv, không nạp
+# .zshrc, nên ~/bin KHÔNG có trong PATH bên đó.
+alias macstatus='ssh mac-cmp-file ~/bin/preflight'
+alias macarm='ssh mac-cmp-file "~/bin/preflight --arm"'
+alias macup='tailscale status | grep macos-comacpro'
+
 # Safety: prompt before clobbering (delete these three if they get in the way).
 alias rm='rm -i'
 alias cp='cp -i'
