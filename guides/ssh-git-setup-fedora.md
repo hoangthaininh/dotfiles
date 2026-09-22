@@ -357,7 +357,7 @@ CONF
 ```bash
 cat > ~/.gitconfig-personal << 'CONF'
 [user]
-    name = k-ryzhkov
+    name = hoangthaininh
     email = hoangthaininh.hgn@gmail.com
     signingkey = ~/.ssh/id_ed25519_personal.pub
 CONF
@@ -383,6 +383,22 @@ CONF
 ```
 
 `insteadOf` là lưới an toàn: copy URL `https://` từ trình duyệt thì Git vẫn đổi sang alias SSH đúng trước khi kết nối.
+
+> **Tên tài khoản GitHub phải khớp thực tế.** Tài khoản này từng đổi tên `k-ryzhkov` → `hoangthaininh` (22/09/2026), và GitHub chỉ *redirect* URL cũ chứ không sửa gì cho bạn. Redirect không vĩnh viễn: ai đăng ký lại tên cũ là nó đứt.
+>
+> Kiểm tên thật, rồi quét mọi remote còn trỏ tên cũ:
+>
+> ```bash
+> ssh -T github.com     # → "Hi <tên thật>!"
+>
+> find ~/Workspace -maxdepth 5 -name .git -type d | while read g; do
+>   d=$(dirname "$g")
+>   u=$(git -C "$d" remote get-url origin 2>/dev/null)
+>   [[ -n "$u" ]] && grep -qi '<tên cũ>' <<< "$u" && echo "$d → $u"
+> done
+> ```
+>
+> Dấu hiệu nhận biết lúc `git push`: dòng `remote: This repository moved.`
 
 ### 6.4 `~/.gitignore_global`
 
