@@ -1,108 +1,71 @@
-# tp [target] — attach or create one tmux session per project ("session per project").
+# tp [target] — one tmux session per project.
 #
 #   tp            fzf picker: live sessions (●) first, then git repos (○)
-#   tp <dir>      session for that directory, created if it isn't running
+#   tp <dir>      session for that directory, created if it is not running
 #   tp <name>     attach to a live session by exact name
 #
-# Projects are found by scanning $TP_PROJECT_DIRS for .git up to $TP_MAX_DEPTH levels
-# deep (repos here sit 3-5 levels below ~/Workspace, so a fixed 2-level glob misses
-# all of them), unioned with zoxide's frecent dirs that contain a .git.
+# The layout is chosen from what this machine's shell history actually shows, not
+# from what a tmux config usually looks like: git is 37% of every command typed,
+# npm/pnpm 14%, and vim/nvim has never been run once — the editor here is VS Code,
+# a GUI app. So there is no editor pane, and there is no four-pane grid:
 #
-# Session naming is collision-aware, which a real tree makes necessary: two repos
-# several levels apart can share a basename (work/acme/apps/web-app and
-# work/acme/apps/storefront/web-app), and a bare basename would make `tp` attach to
-# the wrong project. Each session records its project dir in the @tp_dir session
-# option; on a clash tp walks up the path — web-app, then storefront_web-app — until
-# it finds a name that is free or already its own.
+#   dev   for the process that blocks a prompt — pnpm run dev, a watcher, a log
+#   git   a free prompt, opened first, because that is where most commands go
 #
-# tmux target syntax caveats, both load-bearing here:
-#   - "=name" forces an exact match, so "api" cannot resolve to "api-gateway".
-#     It works for has-session/new-window/split-window/attach/switch-client.
-#   - It does NOT work for set-option/show-option/display-message: those silently
-#     return empty instead of erroring. So option reads below go through
-#     list-sessions + exact string compare in zsh, never through "=".
-#   - Always brace ${name} before a ':' — zsh reads $name:r / $name:c as history
-#     modifiers, turning "=$name:run" into "my_appun".
+# Anything more is one prefix+c or prefix+| away. A grid of panes that sits mostly
+# idle is not a layout, it is furniture — and it costs screen height on every one.
 #
-# Default layout: window 1 "code" (full height, for $EDITOR), window 2 "run"
-# (4 tiled panes: frontend / backend / logs / spare shell), window 3 "git".
-# Drop an executable .tmux-project in a repo root to override it; it runs after
-# window "code" exists, with $1 = session name, $2 = project dir.
+# Session naming is basename-first, qualified by the parent only when two projects
+# collide (Workspace holds cmp-sm-fe and cmp-sm-service side by side). The project
+# directory is recorded in the @tp_dir session option, which is what makes a second
+# `tp` on the same repo attach instead of building a duplicate.
+#
+# tmux target syntax, both load-bearing here:
+#   - "=name" forces an exact match, so "cmp" cannot resolve to "cmp-sm-fe".
+#   - Always brace ${name} before a ':' — zsh reads $name:r as a history modifier
+#     and would turn "=$name:git" into something else entirely.
 
 emulate -L zsh
 setopt local_options extended_glob null_glob
 
 (( $+commands[tmux] )) || { print -u2 "tp: tmux is not installed"; return 1 }
 
-local target="${1:-}"
-local dir="" name="" s p g c line
+local target="${1:-}" dir="" name="" s g
 
-# ── what is already running, and which project each session belongs to ────────
-local -a live_sessions
-local -A live_dir dir_session
-live_sessions=( ${(f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null)"} )
-for s in $live_sessions; do
-  # -t "$s" without '=' is safe: an exactly-named session exists, and tmux
-  # resolves an exact match before falling back to prefix matching.
+# ── what is running, and which project each session belongs to ────────────────
+local -A live_dir
+for s in ${(f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null)"}; do
   live_dir[$s]="$(tmux show-option -qv -t "$s" '@tp_dir' 2>/dev/null)"
-  [[ -n ${live_dir[$s]} ]] && dir_session[${live_dir[$s]}]=$s
 done
 
 # ── resolve the target ────────────────────────────────────────────────────────
 if [[ -z $target ]]; then
-  local -a paths menu
-
-  for p in ${TP_PROJECT_DIRS[@]}; do
-    [[ -d $p ]] || continue
-    if (( $+commands[fd] )); then
-      for g in ${(f)"$(fd --hidden --glob '.git' --max-depth ${TP_MAX_DEPTH:-7} \
-                          --exclude node_modules --exclude .venv --exclude vendor \
-                          "$p" 2>/dev/null)"}; do
-        paths+=( "${${g%/}:h}" )        # fd prints dirs with a trailing slash
-      done
-    else
-      for g in $p/**/.git(N); do
-        paths+=( "${g:h}" )
-      done
-    fi
+  local -a menu
+  for s in ${(k)live_dir}; do
+    menu+=( "● ${s}   ${${live_dir[$s]:-(not created by tp)}/#$HOME/~}" )
   done
 
-  # zoxide's frecent dirs catch repos living outside $TP_PROJECT_DIRS.
-  if (( $+commands[zoxide] )); then
-    for p in ${(f)"$(zoxide query -l 2>/dev/null)"}; do
-      [[ -e $p/.git ]] && paths+=( "$p" )
-    done
-  fi
-
-  # Session names hold no spaces, so "first field" parses the pick unambiguously.
-  for s in $live_sessions; do
-    if [[ -n ${live_dir[$s]} ]]; then
-      menu+=( "● $s   ${live_dir[$s]/#$HOME/~}" )
-    else
-      menu+=( "● $s   (not created by tp)" )
-    fi
+  # Repos sit 3-5 levels below ~/Workspace, so a shallow scan finds nothing.
+  for g in ${(f)"$(fd --hidden --glob '.git' --max-depth 7 \
+                      --exclude node_modules --exclude .venv \
+                      . "$HOME/Workspace" 2>/dev/null)"}; do
+    dir="${${g%/}:h}"
+    [[ -n ${live_dir[(r)$dir]:-} ]] && continue      # already open, listed above
+    menu+=( "○ ${dir/#$HOME/~}" )
   done
-  for p in ${(u)paths}; do
-    [[ -n ${dir_session[$p]:-} ]] && continue      # already open — listed above
-    menu+=( "○ ${p/#$HOME/~}" )
-  done
+  dir=""
 
-  (( $#menu )) || {
-    print -u2 "tp: nothing to pick — no live sessions and no git repos under:"
-    print -u2 "    ${TP_PROJECT_DIRS[*]}"
-    print -u2 "    edit TP_PROJECT_DIRS in ~/.config/zsh/conf.d/tmux.zsh, or: tp <dir>"
-    return 1
-  }
+  (( $#menu )) || { print -u2 "tp: no live sessions and no git repos under ~/Workspace"; return 1 }
 
   local pick
   pick=$(print -rl -- $menu | fzf --reverse --no-multi \
            --prompt='project ❯ ' --header='● live session    ○ project') || return 0
   [[ -n $pick ]] || return 0
 
-  if [[ $pick[1] == "●" ]]; then
+  if [[ ${pick[1]} == "●" ]]; then
     name="${${pick#● }%% *}"
   else
-    dir="${${pick#○ }/#\~/$HOME}"
+    dir="${${${pick#○ }%% *}/#\~/$HOME}"
   fi
 
 elif (( ${+live_dir[$target]} )); then
@@ -110,55 +73,36 @@ elif (( ${+live_dir[$target]} )); then
 elif [[ -d $target ]]; then
   dir=$target
 else
-  print -u2 "tp: no live session and no directory matching '$target'"
+  print -u2 "tp: no live session and no directory matching '${target}'"
   return 1
 fi
 
-# ── derive a collision-free session name from the directory ───────────────────
+# ── derive a collision-free session name ──────────────────────────────────────
 if [[ -n $dir ]]; then
-  dir=${dir:A}                                     # absolute, symlinks resolved
+  dir=${dir:A}                                        # absolute, symlinks resolved
+  name=${dir:t}
 
-  local -a parts cands
-  parts=( ${(s:/:)${dir#/}} )
-  local n=$#parts i suffix
-  for i in 1 2 3; do
-    (( n - i + 1 >= 1 )) || break
-    suffix="${(j:_:)parts[n-i+1,n]}"
-    cands+=( "${${suffix//[.: ]/_}//[^[:alnum:]_-]/}" )
-  done
-
-  for c in $cands; do
-    (( ${+live_dir[$c]} ))   || { name=$c; break }   # name is free
-    [[ ${live_dir[$c]} == $dir ]] && { name=$c; break }   # already our session
-  done
-
-  [[ -n $name ]] || {
-    print -u2 "tp: every candidate name is taken by another project: ${cands[*]}"
-    print -u2 "    attach by name, or kill the stale session (tk <name>)"
-    return 1
-  }
+  # Qualify with the parent directory only when another project already owns the
+  # bare name; two levels is enough for this tree, and a third collision is a
+  # naming problem worth hearing about rather than papering over.
+  if [[ -n ${live_dir[$name]:-} && ${live_dir[$name]} != $dir ]]; then
+    name="${${dir:h}:t}_${name}"
+    if [[ -n ${live_dir[$name]:-} && ${live_dir[$name]} != $dir ]]; then
+      print -u2 "tp: '${name}' is taken by another project — rename one, or: ta <name>"
+      return 1
+    fi
+  fi
 fi
 [[ -n $name ]] || { print -u2 "tp: could not derive a session name"; return 1 }
 
-# ── create it if it isn't running yet ─────────────────────────────────────────
+# ── create it if it is not running ────────────────────────────────────────────
 if ! tmux has-session -t "=${name}" 2>/dev/null; then
-  [[ -n $dir ]] || { print -u2 "tp: session '$name' is gone and no directory was given"; return 1 }
+  [[ -n $dir ]] || { print -u2 "tp: session '${name}' is gone and no directory was given"; return 1 }
 
-  tmux new-session -d -s "$name" -c "$dir" -n code || return 1
-  tmux set-option -t "$name" '@tp_dir' "$dir"      # how the next tp finds this again
-
-  if [[ -x $dir/.tmux-project ]]; then
-    "$dir/.tmux-project" "$name" "$dir"
-  else
-    tmux new-window -t "=${name}:" -c "$dir" -n run
-    repeat 3; do
-      tmux split-window -t "=${name}:run" -c "$dir"
-    done
-    tmux select-layout -t "=${name}:run" tiled     # 4 panes -> clean 2x2
-    tmux select-pane   -t "=${name}:run.1"
-    tmux new-window    -t "=${name}:" -c "$dir" -n git
-    tmux select-window -t "=${name}:code"
-  fi
+  tmux new-session -d -s "$name" -c "$dir" -n dev || return 1
+  tmux set-option -t "$name" '@tp_dir' "$dir"        # how the next tp finds this
+  tmux new-window  -t "=${name}:" -c "$dir" -n git
+  tmux select-window -t "=${name}:git"               # land where the typing happens
 fi
 
 # ── attach, or switch if we are already inside tmux ───────────────────────────

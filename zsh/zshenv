@@ -11,7 +11,10 @@ export XDG_STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
 # Point zsh at ~/.config/zsh; .zprofile/.zshrc/.zlogin then load from there.
 export ZDOTDIR="$XDG_CONFIG_HOME/zsh"
 
-export EDITOR="${EDITOR:-vim}"
+# VS Code is the editor on this machine; vim is not installed at all, and the old
+# default made `git commit` without -m fail with "cannot run vim". --wait blocks
+# until the tab is closed, which is what git, `fc` and Ctrl-X Ctrl-E all require.
+export EDITOR="${EDITOR:-code --wait}"
 export VISUAL="$EDITOR"
 export PAGER="${PAGER:-less}"
 export LESS="-R"
