@@ -1,6 +1,6 @@
 # Remote access: điều khiển máy công ty (macOS) từ xa — Runbook
 
-**Phiên bản:** v5.0 · 22/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
+**Phiên bản:** v5.1 · 22/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
 **Máy đích:** macOS 15, Intel Core i5 (máy công ty) · iTerm2 tại bàn
 **Client:** Fedora 44 (máy cá nhân, đường chính) · iPhone (tuỳ chọn)
 
@@ -636,20 +636,35 @@ Mục tiêu: client chạm được Mac, **Mac không chạm được client nà
 
 Điều này quan trọng hơn khi client là máy Fedora chứ không phải iPhone. Một desktop Linux có sshd, có thể có Samba, CUPS, dev server đang chạy — bề mặt thật để tấn công, khác với iPhone gần như không có service nào lắng nghe.
 
-### 6.1 Một lệnh, không phải một tệp ACL
+### 6.1 Một lệnh — chạy TRÊN FEDORA
+
+> **Máy nào chạy quyết định kết quả, và chạy nhầm là phá đúng thứ cần giữ.**
+> `--shields-up` chặn kết nối **đi vào** chính máy chạy lệnh.
+>
+> | Chạy trên | Kết quả |
+> |---|---|
+> | **Fedora** ✓ | Mac không vào được Fedora · `ssh mac-cmp` vẫn chạy |
+> | Mac ✗ | Fedora không vào được Mac → **mất luôn `ssh mac-cmp`**, phải ngồi trước máy Mac để gỡ |
+>
+> Máy cần bọc giáp là **client**, tức máy Fedora.
 
 ```bash
-sudo tailscale up --shields-up
+# trên Fedora
+sudo tailscale set --shields-up
 ```
 
-Máy này vẫn **đi ra** bình thường (`ssh mac-cmp` chạy như cũ) nhưng không **nhận vào** từ bất kỳ node nào trong tailnet.
+**`set`, không phải `up`.** Help của chính Tailscale: *"Unlike `tailscale up`, this command does not require the complete set of desired settings. Only settings explicitly mentioned will be set."* Nghĩa là `tailscale up --shields-up` gửi lại **toàn bộ** bộ preference, và những thứ không ghi ra có thể bị đặt lại về mặc định — `--accept-dns`, `--accept-routes`, exit node. `set` chỉ đổi đúng thứ được nêu tên. Có từ Tailscale 1.36.
 
-Kiểm:
+Fedora vẫn **đi ra** bình thường nhưng không **nhận vào** từ bất kỳ node nào trong tailnet.
+
+Kiểm (trên Fedora):
 
 ```bash
 tailscale debug prefs | grep ShieldsUp     # → true
 ssh mac-cmp-file 'whoami'                  # vẫn phải chạy được
 ```
+
+Hoàn tác: `sudo tailscale set --shields-up=false`
 
 ### 6.2 Vì sao không dùng ACL
 
@@ -715,7 +730,7 @@ docker ps --format '{{.Names}}\t{{.Ports}}'
 
 **Taildrop nhận file sẽ hỏng** — `tailscale file cp` gửi *tới* máy này không còn nhận được. Gửi *đi* vẫn chạy. Dùng `rsync` qua `mac-cmp-file` thay thế, vốn đã là cách chuyển file chính trong guide này.
 
-Bỏ shields khi cần: `sudo tailscale up --shields-up=false`.
+Bỏ shields khi cần: `sudo tailscale set --shields-up=false` (trên Fedora).
 
 ---
 
@@ -1153,7 +1168,37 @@ Thiết bị nào chạm được vào máy công ty thì **là** đường vào
 | **`ssh-add -t 8h`** | Agent tự quên key. Nạp vĩnh viễn thì máy bỏ mở qua đêm = key sẵn sàng cho bất kỳ ai ngồi vào. ✅ **Đã xác minh** GNOME Keyring trên Fedora 44 tôn trọng `-t` — xem [2.6](#26-ssh-agent) |
 | **Không `ForwardAgent`** | Bật là cho máy công ty dùng mọi key trong agent của bạn suốt phiên kết nối. Xem [Phase 7](#danh-tính-git-nằm-trên-fedora-không-nằm-trên-mac) |
 | **Khoá màn hình tự động** | GNOME Settings → Privacy → Screen Lock, ≤ 5 phút |
-| **firewalld** | Fedora bật mặc định. Kiểm tra: `sudo firewall-cmd --state` |
+| **firewalld** | Fedora bật mặc định. Kiểm tra: `sudo firewall-cmd --state`. ⚠ **Nó không che được cổng do Docker publish** — xem dòng dưới |
+| **Cổng Docker publish** | Docker ghi thẳng netfilter, bỏ qua firewalld **và** `--shields-up`. Compose bind `"5432:5432"` là mở ra cả LAN lẫn tailnet. Dùng `"127.0.0.1:5432:5432"` — xem [6.3](#63-ba-thứ---shields-up-không-giải-quyết) |
+| **`--shields-up` trên Fedora** | Chặn mọi kết nối vào từ tailnet. Thay cho ACL với tailnet cá nhân — xem [6.1](#61-một-lệnh--chạy-trên-fedora) |
+| **Dịch vụ nghe trên `0.0.0.0`** | Zone `FedoraWorkstation` chỉ mở những gì khai báo, nên wifi đã được chặn. Nhưng `tailscale0` **không thuộc zone firewalld nào** — mọi thứ nghe wildcard đều mở với tailnet cho tới khi bật shields. Rà: `ss -tuln \| grep -vE '127\.0\.0\.1\|::1'` |
+
+**Dịch vụ mặc định không cần trên máy trạm.** Đối chiếu với phần cứng thật trước khi tắt — đây là kết quả đo trên máy này (22/09/2026), máy khác có thể khác:
+
+| Dịch vụ | Tắt được khi |
+|---|---|
+| `passim` | Daemon chia sẻ metadata firmware của fwupd, nghe `0.0.0.0:27500`. Vô dụng nếu bạn không có nhiều máy chia nhau băng thông. Unit là `static` nên phải `mask`, và **đừng gỡ gói** — `fwupd` liên kết `libpassim.so.1` |
+| `livesys`, `livesys-late` | Dành cho Live ISO; máy đã cài đặt thì là rác sót |
+| `qemu-guest-agent` | `systemd-detect-virt` trả về `none` (máy thật) |
+| `iscsi-onboot`, `iscsi-starter` | `ls /etc/iscsi/nodes` rỗng |
+| `mdmonitor` | `/proc/mdstat` không có mảng RAID |
+| `lvm2-monitor` | `lvs` không có volume (btrfs trên LUKS trực tiếp) |
+| `ModemManager` | Không có interface `ww*`/`wwan*`. Cắm USB 4G sau này thì bật lại |
+
+```bash
+sudo systemctl mask --now passim.service
+sudo systemctl disable --now livesys livesys-late qemu-guest-agent \
+  iscsi-onboot iscsi-starter mdmonitor lvm2-monitor ModemManager
+```
+
+> **Nhóm `docker` ≈ root không cần mật khẩu.** Ai chạy được `docker` là mount được `/` của host vào container và thành root, bỏ qua hoàn toàn mật khẩu `sudo`. Đây là đánh đổi cố hữu của Docker trên Linux, không phải lỗi cấu hình. Hết hẳn chỉ khi chuyển sang Docker rootless hoặc Podman rootless — cả hai đều là dự án riêng, không phải việc làm kèm.
+
+**Trần journal.** Mặc định là 10% đĩa (≈47G trên ổ 475G):
+
+```bash
+echo 'SystemMaxUse=200M' | sudo tee -a /etc/systemd/journald.conf
+sudo systemctl restart systemd-journald
+```
 
 ### 9.2 iPhone (nếu dùng)
 
@@ -1308,7 +1353,7 @@ Bước 3 và 4 chứng minh tmux thực sự làm được việc của nó. B�
 [ ]  3  (tuỳ chọn) iPhone: Tailscale, tắt sync Termius, key, host
 [ ]  4  grep Include → viết config → sshd -T xác minh → test MỌI client → đóng tab
 [ ]  5  Mac: tmux + .tmux.conf
-[ ]  6  tailscale up --shields-up
+[ ]  6  Fedora: tailscale set --shields-up
 [ ]  7  git remote sang SSH; app GUI chạy sẵn
 [ ]  8  Cài preflight vào ~/bin; đặt PREFLIGHT_TMUX_SESSION=desk
 [ ]  9  Fedora: xác nhận LUKS; khoá màn hình; đọc runbook mất thiết bị
@@ -1544,12 +1589,39 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 
 ## Thay đổi trong v4.1
 
+### v5.1 — sửa lệnh shields-up, và đưa kết quả rà hệ thống vào Phase 9
+
+**Hai lỗi trong §6.1 của v5.0, cả hai đều gây hậu quả thật:**
+
+| | v5.0 | v5.1 |
+|---|---|---|
+| Máy nào chạy | "máy này" — mơ hồ, runbook nói về **hai** máy | Ghi rõ **TRÊN FEDORA**, kèm bảng hậu quả nếu chạy nhầm |
+| Lệnh | `tailscale up --shields-up` | `tailscale set --shields-up` |
+
+Chạy trên Mac là chặn chiều Fedora → Mac, tức **mất luôn `ssh mac-cmp`** và phải ngồi trước máy Mac để gỡ — đúng tình huống setup này sinh ra để tránh.
+
+`up` gửi lại **toàn bộ** bộ preference; thứ không ghi ra có thể bị đặt lại về mặc định. Help của chính Tailscale nói `set` mới là lệnh đổi từng preference. Có từ 1.36.
+
+**Phase 9.1 mở rộng** với kết quả rà hệ thống Fedora — trước đây những phát hiện này không có chỗ nào để lưu và sẽ mất khi cài lại máy:
+
+- Cổng do Docker publish: firewalld **và** shields-up đều không chặn được
+- `tailscale0` không thuộc zone firewalld nào — mọi service nghe `0.0.0.0` đều mở với tailnet cho tới khi bật shields
+- 8 dịch vụ mặc định không cần trên máy trạm, kèm **cách tự kiểm chứng** từng cái thay vì tin danh sách
+- `passim` phải `mask` (unit `static`), và không được gỡ gói vì `fwupd` liên kết `libpassim.so.1`
+- Nhóm `docker` ≈ root không mật khẩu
+- Trần journal (mặc định 10% đĩa)
+
+**Một link nội bộ gãy** đã sửa: `#khi-mất-thiết-bị` → `#93-runbook-mất-một-thiết-bị`. Toàn bộ 33 link nội bộ giờ đều trỏ đúng.
+
+---
+
 ### v5.0 — Phase 6 đổi từ ACL sang `--shields-up`, và lỗ Docker
 
 **Phase 6 viết lại.** Bản cũ dựng một tệp ACL trong admin console. Nó chạy được, nhưng với tailnet cá nhân hai node thì sai công cụ: một lệnh cục bộ làm đúng việc đó, không có rủi ro tự khoá mình, và không phải sửa lại mỗi lần thêm port (mosh, VNC).
 
 ```bash
-sudo tailscale up --shields-up
+# trên Fedora — KHÔNG phải trên Mac
+sudo tailscale set --shields-up
 ```
 
 Cú pháp ACL giữ lại trong §6.2 cho trường hợp tailnet có node của người khác — lúc đó shields không đủ vì nó là thiết lập cục bộ, người dùng thiết bị tắt được.
@@ -1624,7 +1696,7 @@ Thêm `macarm` và `macup`. `macup` chỉ hỏi Tailscale, không SSH — 0 giâ
 
 ### v4.6 — sửa lỗi trong quy trình thu hồi, và hai điều đo được sau khi chạy thật
 
-**Lỗi nghiêm trọng đã sửa:** lệnh thu hồi key ở [Phase 10](#khi-mất-thiết-bị) dùng `grep -v 'fedora-home'`, nhưng comment thật trong `authorized_keys` trên Mac là `tainjiao-dotdev`. Chuỗi sai thì `grep -v` khớp **mọi** dòng, ghi lại file y nguyên và **không xoá gì** — trong khi bạn tưởng đã thu hồi xong. Lỗi im lặng, đúng vào lúc tệ nhất. Giờ có bước `grep` xem trước và `wc -l` đối chiếu.
+**Lỗi nghiêm trọng đã sửa:** lệnh thu hồi key ở [9.3](#93-runbook-mất-một-thiết-bị) dùng `grep -v 'fedora-home'`, nhưng comment thật trong `authorized_keys` trên Mac là `tainjiao-dotdev`. Chuỗi sai thì `grep -v` khớp **mọi** dòng, ghi lại file y nguyên và **không xoá gì** — trong khi bạn tưởng đã thu hồi xong. Lỗi im lặng, đúng vào lúc tệ nhất. Giờ có bước `grep` xem trước và `wc -l` đối chiếu.
 
 | | v4.5 | v4.6 |
 |---|---|---|
