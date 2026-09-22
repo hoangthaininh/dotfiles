@@ -45,9 +45,11 @@ alias reload='exec zsh'
 alias path='echo -e ${PATH//:/\\n}'
 alias ip='ip -color=auto'
 
-# Máy công ty (macOS qua Tailscale) — xem guides/remote-access-runbook.md
-# Đường dẫn tuyệt đối: phiên ssh không tương tác chỉ nạp .zshenv, không nạp
-# .zshrc, nên ~/bin KHÔNG có trong PATH bên đó.
+# Work Mac over Tailscale — see guides/remote-access-runbook.md.
+# Absolute path on purpose: `ssh host <cmd>` is a non-interactive session, so zsh
+# reads .zshenv only and never .zshrc — ~/bin is not on PATH over there.
+# macup asks Tailscale instead of connecting: it answers in 0s, while macstatus
+# against a sleeping Mac costs the full 10s ConnectTimeout.
 alias macstatus='ssh mac-cmp-file ~/bin/preflight'
 alias macarm='ssh mac-cmp-file "~/bin/preflight --arm"'
 alias macup='tailscale status | grep macos-comacpro'

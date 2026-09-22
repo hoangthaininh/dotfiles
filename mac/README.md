@@ -1,18 +1,19 @@
 # mac/
 
-Script chạy **trên máy công ty macOS**, không phải trên Fedora này.
+Scripts that run on the **work macOS machine**, not on this Fedora box.
 
-Tách riêng để không nhầm với script của máy này — `bin/` hay `zsh/functions/`
-là của Fedora, thư mục này thì không bao giờ được symlink vào `$PATH` ở đây.
+Kept separate so they are never mistaken for local tooling: `zsh/functions/` is
+this machine's, and nothing in here should ever be symlinked onto `$PATH` here —
+`stat -f`, `pmset`, `launchctl` and `security` are all macOS-only.
 
-| Tệp | Việc |
+| File | Purpose |
 |---|---|
-| `preflight` | Kiểm tra & chuẩn bị Mac trước khi rời bàn — xem `guides/remote-access-runbook.md` §8 |
+| `preflight` | Check and arm the Mac before leaving the desk — see `guides/remote-access-runbook.md` §8 |
 
-## Deploy lên Mac
+## Deploying to the Mac
 
 ```bash
-macup    # xác nhận Mac đang tỉnh trước đã
+macup    # confirm the Mac is awake first
 
 ssh mac-cmp-file 'mkdir -p ~/bin && grep -q "HOME/bin" ~/.zshenv \
   || echo "export PATH=\"\$HOME/bin:\$PATH\"" >> ~/.zshenv'
@@ -20,5 +21,8 @@ scp mac/preflight mac-cmp-file:~/bin/preflight
 ssh mac-cmp-file 'chmod +x ~/bin/preflight && ~/bin/preflight'
 ```
 
-`.zshenv` chứ không phải `.zshrc`: phiên `ssh host <cmd>` là không tương tác,
-zsh chỉ nạp `.zshenv`.
+`.zshenv`, not `.zshrc`: `ssh host <cmd>` is a non-interactive session and zsh
+reads `.zshenv` only.
+
+Script comments are English to match the rest of the repo; the status output the
+script prints stays Vietnamese to match the runbook it belongs to.

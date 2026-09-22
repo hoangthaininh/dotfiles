@@ -796,41 +796,44 @@ Rồi dán toàn bộ khối dưới đây vào terminal trên Mac (một lần,
 cat > ~/bin/preflight << 'PREFLIGHT_SCRIPT'
 #!/bin/zsh
 #
-# preflight — kiểm tra & chuẩn bị Mac cho remote access trước khi rời bàn.
+# preflight — check and arm the work Mac for remote access before leaving.
 #
-# Setup remote access hiếm khi hỏng vì cấu hình sai; nó hỏng vì máy ở sai
-# trạng thái đúng lúc cần: đã ngủ, đã logout, Docker chưa chạy, node key sắp
-# hết hạn. Script này đẩy việc phát hiện về lúc còn sửa được.
+# Remote access rarely breaks because a config is wrong; it breaks because the
+# machine is in the wrong state when you need it — asleep, logged out, Docker not
+# started, node key about to expire. This moves detection to while you can still
+# walk over and fix it.
 #
-# Dùng:
-#   preflight            chỉ kiểm tra, không thay đổi gì
-#   preflight --arm      kiểm tra + bật caffeinate và tạo tmux session
-#   preflight --help     in trợ giúp
+# Usage:
+#   preflight            check only, change nothing
+#   preflight --arm      check, then start caffeinate and create the tmux session
+#   preflight --help     print this header
 #
-# Exit: 0 = sẵn sàng (có thể kèm cảnh báo) · 1 = có mục FAIL · 2 = sai tham số
+# Exit: 0 = ready (warnings allowed) · 1 = something FAILed · 2 = bad argument
 #
-# Chạy TRÊN MAC. Từ Fedora: `macstatus` / `macarm` (xem zsh/conf.d/aliases.zsh).
+# Runs ON THE MAC. From Fedora: `macstatus` / `macarm` (zsh/conf.d/aliases.zsh).
 #
-# Biến môi trường:
-#   PREFLIGHT_TMUX_SESSION   tên tmux session      (mặc định: desk)
-#   PREFLIGHT_WORKDIR        thư mục tạo session   (mặc định: $HOME)
-#   PREFLIGHT_CAFFEINATE     giây giữ máy thức     (mặc định: 28800 = 8h)
-#   NO_COLOR                 đặt bất kỳ giá trị nào để tắt màu
+# Status output is Vietnamese to match the runbook this belongs to; comments are
+# English to match the rest of the repo.
+#
+# Environment:
+#   PREFLIGHT_TMUX_SESSION   tmux session name      (default: desk)
+#   PREFLIGHT_WORKDIR        directory for it       (default: $HOME)
+#   PREFLIGHT_CAFFEINATE     seconds to stay awake  (default: 28800 = 8h)
+#   NO_COLOR                 set to anything to disable colour
 #
 
 emulate -L zsh
 set -u
 
-# PATH tự lo, đừng tin PATH thừa kế.
+# Set PATH ourselves; never trust the inherited one.
 #
-# Phiên `ssh host <cmd>` là KHÔNG tương tác: zsh chỉ nạp .zshenv, bỏ qua
-# .zshrc. PATH lúc đó là /usr/bin:/bin:/usr/sbin:/sbin — không có
-# /usr/local/bin lẫn /opt/homebrew/bin. Thiếu dòng này thì tailscale, tmux
-# và docker đều "không tìm thấy", và script báo CHƯA SẴN SÀNG trên một máy
-# hoàn toàn khoẻ mạnh.
+# `ssh host <cmd>` is a NON-INTERACTIVE session: zsh reads .zshenv and skips
+# .zshrc, leaving PATH as /usr/bin:/bin:/usr/sbin:/sbin — no /usr/local/bin and
+# no /opt/homebrew/bin. Without this line tailscale, tmux and docker all come
+# back "not found" and the script reports NOT READY on a perfectly healthy Mac.
 export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 
-# ------------------------------------------------------------------ tham số
+# ----------------------------------------------------------------- arguments
 
 ARM=0
 case "${1:-}" in
@@ -847,8 +850,8 @@ CAFFEINATE_SECONDS="${PREFLIGHT_CAFFEINATE:-28800}"
 FAIL=0
 WARN=0
 
-# Màu bật mặc định: đích dùng chính là `ssh mac-cmp-file preflight`, nơi
-# stdout là pipe nhưng người đọc vẫn là một terminal. Tôn trọng NO_COLOR.
+# Colour on by default: the main caller is `ssh mac-cmp-file preflight`, where
+# stdout is a pipe but a human terminal is still reading it. Honour NO_COLOR.
 if [[ -n "${NO_COLOR:-}" ]]; then
   G=""; Y=""; R=""; DIM=""; B=""; N=""
 else
@@ -862,7 +865,7 @@ act()  { print -r -- "  ${B}-->${N}  $1" }
 skip() { print -r -- "  ${DIM}skip${N} $1" }
 sec()  { print -r -- ""; print -r -- "${DIM}$1${N}" }
 
-# ----------------------------------------------------------------- mạng
+# ------------------------------------------------------------------- network
 
 sec "Mạng"
 
@@ -871,7 +874,8 @@ if ! command -v tailscale >/dev/null 2>&1; then
 elif tailscale status >/dev/null 2>&1; then
   ok "tailscale up — $(tailscale ip -4 2>/dev/null | head -1)"
 
-  # Node key hết hạn = rơi khỏi tailnet, và re-auth cần GUI TẠI MÁY.
+  # An expired node key drops the machine off the tailnet, and re-auth needs a
+  # GUI session AT the machine — which is exactly what you will not have.
   DAYS=$(tailscale status --json 2>/dev/null | python3 -c '
 import sys, json, datetime
 try:
@@ -900,7 +904,7 @@ else
   bad "tailscale down — chạy: tailscale up"
 fi
 
-# ------------------------------------------------------------------ ssh
+# ----------------------------------------------------------------- way in
 
 sec "Đường vào"
 
@@ -912,8 +916,8 @@ fi
 
 AK="$HOME/.ssh/authorized_keys"
 if [[ -f "$AK" ]]; then
-  # grep -c in ra "0" VÀ trả exit 1 khi không khớp; `|| echo 0` sẽ nối thêm
-  # một "0" nữa thành "0\n0". Bắt exit code riêng thay vì dùng ||.
+  # grep -c prints "0" AND exits 1 when nothing matches, so `|| echo 0` appends
+  # a second "0", giving "0\n0". Capture the status separately instead.
   KEYS=$(grep -c '^ssh-' "$AK" 2>/dev/null) || KEYS=0
   PERM=$(stat -f '%OLp' "$AK" 2>/dev/null || print -r -- "?")
   if [[ "$PERM" == "600" ]]; then
@@ -932,14 +936,14 @@ else
   skip "password auth (cần sudo không mật khẩu)"
 fi
 
-# Screen Sharing: mong đợi là TẮT. Bật là bất thường.
+# Screen Sharing is expected to be OFF here; finding it on is the anomaly.
 if nc -z -G 2 localhost 5900 >/dev/null 2>&1; then
   warn "Screen Sharing ĐANG BẬT trên 5900 — tắt nếu không dùng"
 else
   ok "Screen Sharing: tắt"
 fi
 
-# ------------------------------------------------------ trạng thái phiên
+# ------------------------------------------------------------ login session
 
 sec "Phiên đăng nhập"
 
@@ -951,8 +955,8 @@ fi
 
 KC="$HOME/Library/Keychains/login.keychain-db"
 if [[ -f "$KC" ]]; then
-  # Dùng EXIT CODE, không grep chữ "lock": output lúc keychain đang MỞ có
-  # chuỗi "lock-on-sleep", nên `grep -qi lock` báo động giả mỗi lần.
+  # Use the EXIT CODE, not a grep for "lock": the output of an UNLOCKED keychain
+  # contains "lock-on-sleep", so `grep -qi lock` cries wolf on every run.
   if security show-keychain-info "$KC" >/dev/null 2>&1; then
     ok "login keychain mở"
   else
@@ -960,7 +964,7 @@ if [[ -f "$KC" ]]; then
   fi
 fi
 
-# ------------------------------------------------------------ nguồn/ngủ
+# ---------------------------------------------------------- power and sleep
 
 sec "Nguồn & giấc ngủ"
 
@@ -973,9 +977,9 @@ fi
 if pgrep -x caffeinate >/dev/null 2>&1; then
   ok "caffeinate đang chạy"
 elif (( ARM )); then
-  # nohup: khi chạy qua `ssh host <cmd>`, ssh đóng kênh ngay sau khi script
-  # thoát. Thiếu nohup thì caffeinate nhận SIGHUP và chết cùng phiên —
-  # đúng lúc bạn vừa bật nó để giữ máy thức.
+  # nohup: over `ssh host <cmd>` the channel closes as soon as the script exits.
+  # Without it caffeinate takes the SIGHUP and dies with the session — precisely
+  # when you just asked it to keep the machine awake.
   nohup caffeinate -dims -t "$CAFFEINATE_SECONDS" >/dev/null 2>&1 &
   disown
   act "đã bật caffeinate (${CAFFEINATE_SECONDS}s)"
@@ -992,7 +996,8 @@ else
   warn "system sleep sau ${DSLEEP} phút — máy sẽ rơi khỏi tailnet"
 fi
 
-# Auto-install macOS update => reboot => FileVault pre-boot => mất máy.
+# Auto-installed macOS update => reboot => FileVault pre-boot screen => the
+# machine is unreachable until someone types the password at the keyboard.
 AUTOOS=$(defaults read /Library/Preferences/com.apple.SoftwareUpdate \
          AutomaticallyInstallMacOSUpdates 2>/dev/null || print -r -- "unset")
 case "$AUTOOS" in
@@ -1001,7 +1006,7 @@ case "$AUTOOS" in
   *) warn "không đọc được cài đặt auto-update (có thể do MDM quản lý)" ;;
 esac
 
-# ------------------------------------------------------------ workspace
+# ------------------------------------------------------------------ workspace
 
 sec "Workspace"
 
@@ -1037,7 +1042,7 @@ else
   ok "đĩa còn ${AVAIL}"
 fi
 
-# -------------------------------------------------------------- tổng kết
+# -------------------------------------------------------------------- verdict
 
 print -r -- ""
 if (( FAIL )); then
