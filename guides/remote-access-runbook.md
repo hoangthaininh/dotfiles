@@ -1,6 +1,6 @@
 # Remote access: điều khiển máy công ty (macOS) từ xa — Runbook
 
-**Phiên bản:** v5.1 · 22/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
+**Phiên bản:** v5.2 · 23/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
 **Máy đích:** macOS 15, Intel Core i5 (máy công ty) · iTerm2 tại bàn
 **Client:** Fedora 44 (máy cá nhân, đường chính) · iPhone (tuỳ chọn)
 
@@ -1004,12 +1004,18 @@ fi
 
 KC="$HOME/Library/Keychains/login.keychain-db"
 if [[ -f "$KC" ]]; then
-  # Use the EXIT CODE, not a grep for "lock": the output of an UNLOCKED keychain
-  # contains "lock-on-sleep", so `grep -qi lock` cries wolf on every run.
+  # Two dead ends here, both measured on this Mac:
+  #   grep -qi lock   — an UNLOCKED keychain prints "lock-on-sleep", so it warns
+  #                     on every single run.
+  #   exit code       — over SSH `security` always fails with 36, "User
+  #                     interaction is not allowed", whether locked or not.
+  # So lock state is simply not observable from a non-GUI session. Say that
+  # instead of guessing; the GUI-session check above already catches the case
+  # this was meant to detect (logged out => keychain locked => git push fails).
   if security show-keychain-info "$KC" >/dev/null 2>&1; then
     ok "login keychain mở"
   else
-    warn "login keychain đang khoá — git/npm qua SSH có thể hỏng"
+    skip "login keychain (không đọc được từ phiên SSH — xem mục GUI session)"
   fi
 fi
 
@@ -1041,6 +1047,10 @@ if [[ -z "$DSLEEP" ]]; then
   skip "system sleep (không đọc được pmset)"
 elif [[ "$DSLEEP" == "0" ]]; then
   ok "system sleep: tắt"
+elif (( DSLEEP <= 5 )); then
+  # Anything this short means the machine is unreachable within minutes of you
+  # walking away, which defeats the whole setup. Worth a FAIL, not a warning.
+  bad "system sleep sau ${DSLEEP} phút — quá ngắn, máy rơi khỏi tailnet gần như ngay lập tức"
 else
   warn "system sleep sau ${DSLEEP} phút — máy sẽ rơi khỏi tailnet"
 fi
@@ -1081,8 +1091,14 @@ else
   skip "docker (chưa cài)"
 fi
 
-AVAIL=$(df -h / 2>/dev/null | awk 'NR==2{print $4}')
-PCT=$(df / 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
+# On macOS `/` is the sealed, read-only system snapshot: it reports ~28% while
+# the data volume sits at 87%. Free space is shared across the APFS container so
+# the Avail figure matches either way, but the PERCENTAGE — the thing that
+# triggers the FAIL — is meaningless read off `/`. Measured, not assumed.
+DISK_MP=/System/Volumes/Data
+[[ -d $DISK_MP ]] || DISK_MP=/
+AVAIL=$(df -h "$DISK_MP" 2>/dev/null | awk 'NR==2{print $4}')
+PCT=$(df "$DISK_MP" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
 if [[ -z "$PCT" ]]; then
   skip "dung lượng đĩa (không đọc được df)"
 elif (( PCT > 90 )); then
@@ -1110,6 +1126,8 @@ chmod +x ~/bin/preflight
 
 Kiểm tra: `preflight` (không tham số) phải chạy và in ra bảng trạng thái.
 
+> **Đã chạy thật trên macOS 15.7.9 ngày 23/09/2026** — cả 14 mục đều thực thi, và lần chạy đó lộ thêm 3 lỗi nữa (xem [changelog v5.2](#v52--preflight-chạy-thật-trên-macos-lộ-3-lỗi)). Bản dưới đây là bản đã vá.
+>
 > **Bản script này đã sửa 6 lỗi so với bản v4.7.** Quan trọng nhất là dòng `export PATH=...` ở đầu: `tailscale`, `tmux` và `docker` đều nằm ở `/usr/local/bin`, không có trong `PATH` của phiên không tương tác — thiếu dòng đó thì `macstatus` báo **CHƯA SẴN SÀNG** với 2 FAIL trên một máy hoàn toàn khoẻ mạnh. Chi tiết ở [changelog v4.9](#v49--preflight-sửa-6-lỗi).
 >
 > Bản dùng được cũng nằm ở `dotfiles/mac/preflight`, đã kiểm cú pháp bằng `zsh -n`.
@@ -1588,6 +1606,25 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 ---
 
 ## Thay đổi trong v4.1
+
+### v5.2 — preflight chạy thật trên macOS, lộ 3 lỗi
+
+Deploy lên `macos-comacpro` (macOS 15.7.9) ngày 23/09/2026 và chạy lần đầu. Bản vá PATH ở v4.9 hiệu quả — `tailscale`, `tmux`, `docker` đều nhận diện được qua SSH. Nhưng chạy thật lộ ba thứ không thể phát hiện từ Fedora:
+
+| # | Lỗi | Đo được |
+|---|---|---|
+| 1 | **Check đĩa đọc nhầm volume** | Trên macOS `/` là snapshot hệ thống chỉ đọc, báo **28%**; volume dữ liệu `/System/Volumes/Data` thật ra **87%**. Free space chung nên số Avail đúng, nhưng **phần trăm** — thứ kích hoạt FAIL — thì vô nghĩa. Check coi như chết trên macOS |
+| 2 | **Check keychain luôn cảnh báo** | Qua SSH, `security show-keychain-info` **luôn** trả exit 36 "User interaction is not allowed", khoá hay không cũng vậy. Cả bản `grep -qi lock` lẫn bản exit-code đều sai. Trạng thái khoá đơn giản là không quan sát được từ phiên không có GUI |
+| 3 | **`sleep` quá ngắn chỉ là `warn`** | Máy đặt sleep **1 phút**. Mức đó thì đi khỏi bàn là mất máy — đáng FAIL chứ không phải cảnh báo |
+
+Sửa: đĩa đọc `/System/Volumes/Data` (fallback `/`), keychain đổi sang `skip` kèm lý do thật — mục GUI session ở trên vốn đã bắt được đúng tình huống nó định phát hiện, và `sleep ≤ 5` phút thành FAIL.
+
+**Hai FAIL thật trên máy đó**, không phải lỗi script:
+
+- `sleep 1` — nguyên nhân gốc của toàn bộ chuyện Mac "offline" suốt buổi. `womp 1` (Wake on LAN) có bật, nhưng WoL cần magic packet trong cùng LAN, Tailscale qua relay không đánh thức được.
+- macOS tự cài update → reboot → FileVault pre-boot → mất máy cho tới khi có người gõ mật khẩu. Đúng bom hẹn giờ [10.1](#101-macos-tự-update-rồi-reboot).
+
+---
 
 ### v5.1 — sửa lệnh shields-up, và đưa kết quả rà hệ thống vào Phase 9
 

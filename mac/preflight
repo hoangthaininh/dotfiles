@@ -159,12 +159,18 @@ fi
 
 KC="$HOME/Library/Keychains/login.keychain-db"
 if [[ -f "$KC" ]]; then
-  # Use the EXIT CODE, not a grep for "lock": the output of an UNLOCKED keychain
-  # contains "lock-on-sleep", so `grep -qi lock` cries wolf on every run.
+  # Two dead ends here, both measured on this Mac:
+  #   grep -qi lock   — an UNLOCKED keychain prints "lock-on-sleep", so it warns
+  #                     on every single run.
+  #   exit code       — over SSH `security` always fails with 36, "User
+  #                     interaction is not allowed", whether locked or not.
+  # So lock state is simply not observable from a non-GUI session. Say that
+  # instead of guessing; the GUI-session check above already catches the case
+  # this was meant to detect (logged out => keychain locked => git push fails).
   if security show-keychain-info "$KC" >/dev/null 2>&1; then
     ok "login keychain mở"
   else
-    warn "login keychain đang khoá — git/npm qua SSH có thể hỏng"
+    skip "login keychain (không đọc được từ phiên SSH — xem mục GUI session)"
   fi
 fi
 
@@ -196,6 +202,10 @@ if [[ -z "$DSLEEP" ]]; then
   skip "system sleep (không đọc được pmset)"
 elif [[ "$DSLEEP" == "0" ]]; then
   ok "system sleep: tắt"
+elif (( DSLEEP <= 5 )); then
+  # Anything this short means the machine is unreachable within minutes of you
+  # walking away, which defeats the whole setup. Worth a FAIL, not a warning.
+  bad "system sleep sau ${DSLEEP} phút — quá ngắn, máy rơi khỏi tailnet gần như ngay lập tức"
 else
   warn "system sleep sau ${DSLEEP} phút — máy sẽ rơi khỏi tailnet"
 fi
@@ -236,8 +246,14 @@ else
   skip "docker (chưa cài)"
 fi
 
-AVAIL=$(df -h / 2>/dev/null | awk 'NR==2{print $4}')
-PCT=$(df / 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
+# On macOS `/` is the sealed, read-only system snapshot: it reports ~28% while
+# the data volume sits at 87%. Free space is shared across the APFS container so
+# the Avail figure matches either way, but the PERCENTAGE — the thing that
+# triggers the FAIL — is meaningless read off `/`. Measured, not assumed.
+DISK_MP=/System/Volumes/Data
+[[ -d $DISK_MP ]] || DISK_MP=/
+AVAIL=$(df -h "$DISK_MP" 2>/dev/null | awk 'NR==2{print $4}')
+PCT=$(df "$DISK_MP" 2>/dev/null | awk 'NR==2{gsub("%","",$5); print $5}')
 if [[ -z "$PCT" ]]; then
   skip "dung lượng đĩa (không đọc được df)"
 elif (( PCT > 90 )); then
