@@ -1,8 +1,34 @@
 # Remote access: điều khiển máy công ty (macOS) từ xa — Runbook
 
-**Phiên bản:** v5.4 · 23/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
+**Phiên bản:** v5.5 · 23/09/2026 · [nhật ký thay đổi](#nhật-ký-thay-đổi)
 **Máy đích:** macOS 15, Intel Core i5 (máy công ty) · iTerm2 tại bàn
 **Client:** Fedora 44 (máy cá nhân, đường chính) · iPhone (tuỳ chọn)
+
+---
+
+## Đang ở đâu — 23/09/2026
+
+Setup đã chạy và được kiểm chứng đầu-cuối. Bảng này để bạn quay lại sau vài tháng mà không phải đọc lại cả tài liệu.
+
+| Phase | | Bằng chứng |
+|---|---|---|
+| 1 Tailscale | ✅ | 2 node, MagicDNS chạy |
+| 2 Client Fedora | ✅ | Key có passphrase, `~/.ssh/config` 2 khối, `known_hosts` đã đối chiếu |
+| 3 iPhone | ⬜ tuỳ chọn | Bỏ qua được |
+| 4 Harden sshd | ✅ | Đo từ ngoài: `Permission denied (publickey)` |
+| 5 tmux config | ⬜ | tmux 3.7c đã chạy; đây chỉ là `.tmux.conf` |
+| 6 Một chiều | ✅ | Từ Mac: `ping` 100% loss, port 22 đóng |
+| 7 Môi trường | ⬜ | Chỉ cần mở Docker Desktop trước khi rời bàn |
+| 8 Preflight | ✅ | `~/bin/preflight` → `SẴN SÀNG`, exit 0 |
+| 9 Bảo mật | ✅ phần lớn | LUKS ✓ · khoá màn hình 5 phút ✓ · shields ✓ |
+| 10 Bom hẹn giờ | ✅ | auto-update tắt · `sleep 0` · timer cảnh báo key expiry |
+
+**Hai thứ còn hở, không gấp:**
+
+- Compose bind `0.0.0.0` — Postgres/MongoDB/MySQL/Redis mở ra LAN và tailnet. Docker bỏ qua cả firewalld lẫn shields-up. Xem [6.3](#63-ba-thứ---shields-up-không-giải-quyết).
+- Nhóm `docker` ≈ root không mật khẩu. Xem [9.1](#91-fedora).
+
+**Hạn duy nhất có thật:** node key hết hạn **21/03/2027**. Re-auth cần GUI tại máy, không sửa được từ xa. Timer `tailscale-key-expiry` trên Fedora sẽ cảnh báo từ 30 ngày trước.
 
 ---
 
@@ -16,7 +42,8 @@
 - [Troubleshooting](#troubleshooting)
 - **Phụ lục** — [A: Full Disk Access](#phụ-lục-a--full-disk-access) · [B: mosh](#phụ-lục-b--mosh) · [C: Screen Sharing](#phụ-lục-c--screen-sharing) · [D: Đích là server?](#phụ-lục-d--nếu-đích-thật-là-server)
 - [Những gì chưa xác minh được](#những-gì-chưa-xác-minh-được)
-- [Thay đổi trong v4.1](#thay-đổi-trong-v41)
+- [Đang ở đâu](#đang-ở-đâu--23092026)
+- [Nhật ký thay đổi](#nhật-ký-thay-đổi)
 - [Tham khảo nhanh](#tham-khảo-nhanh)
 
 ---
@@ -93,7 +120,8 @@ Một cổng vào duy nhất trên Mac. Không port nào phơi ra internet. Mỗ
 | **SSH + tmux**, không mosh | mosh trên macOS có chế độ hỏng im lặng ([Phụ lục B](#phụ-lục-b--mosh)) | Mạng của bạn tệ thật và độ trễ gõ phiền |
 | **Không Full Disk Access** | Code nằm ngoài vùng TCC bảo vệ. Cấp quyền trước khi có nhu cầu là sai thứ tự | Gặp `Operation not permitted` thật |
 | **Không Screen Sharing** | Bề mặt tấn công đang bị khai thác; hiếm khi thật sự cần | Buộc phải bấm GUI |
-| **`hosts` trong ACL**, không `tag:` | Tag không phù hợp cho thiết bị người dùng cuối, và gắn tag rồi xác thực sẽ **tự tắt key expiry** | Tailnet lớn lên, cần phân nhóm thật |
+| **`--shields-up`**, không ACL | Tailnet cá nhân hai node: một lệnh cục bộ, không rủi ro tự khoá, không phải sửa lại mỗi lần thêm port ([6.2](#62-vì-sao-không-dùng-acl)) | Tailnet có node của người khác |
+| Nếu phải dùng ACL: **`hosts`**, không `tag:` | Tag không phù hợp cho thiết bị người dùng cuối, và gắn tag rồi xác thực sẽ **tự tắt key expiry** | Tailnet lớn lên, cần phân nhóm thật |
 
 > **Vì sao mặc định là tắt:** thêm một quyền sau thì rẻ, gỡ một quyền đã cấp thì không ai gỡ. Bạn sẽ không bao giờ quay lại tắt Full Disk Access sau khi đã bật, kể cả khi hoá ra không cần.
 
@@ -1199,7 +1227,7 @@ Kiểm tra: `preflight` (không tham số) phải chạy và in ra bảng trạn
 
 > **Đã chạy thật trên macOS 15.7.9 ngày 23/09/2026** — cả 14 mục đều thực thi, và lần chạy đó lộ thêm 3 lỗi nữa (xem [changelog v5.2](#v52--preflight-chạy-thật-trên-macos-lộ-3-lỗi)). Bản dưới đây là bản đã vá.
 >
-> **Bản script này đã sửa 6 lỗi so với bản v4.7.** Quan trọng nhất là dòng `export PATH=...` ở đầu: `tailscale`, `tmux` và `docker` đều nằm ở `/usr/local/bin`, không có trong `PATH` của phiên không tương tác — thiếu dòng đó thì `macstatus` báo **CHƯA SẴN SÀNG** với 2 FAIL trên một máy hoàn toàn khoẻ mạnh. Chi tiết ở [changelog v4.9](#v49--preflight-sửa-6-lỗi).
+> **Bản script này đã sửa 6 lỗi so với bản v4.7.** Quan trọng nhất là dòng `export PATH=...` ở đầu: `tailscale`, `tmux` và `docker` đều nằm ở `/usr/local/bin`, không có trong `PATH` của phiên không tương tác — thiếu dòng đó thì `macstatus` báo **CHƯA SẴN SÀNG** với 2 FAIL trên một máy hoàn toàn khoẻ mạnh. Chi tiết ở [nhật ký thay đổi](#v41--v49--tóm-tắt).
 >
 > Bản dùng được cũng nằm ở `dotfiles/mac/preflight`, đã kiểm cú pháp bằng `zsh -n`.
 
@@ -1599,7 +1627,7 @@ sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp "$REAL"
 
 > **Nợ vận hành:** đường dẫn Cellar chứa số version. Mỗi `brew upgrade mosh` là phải chạy lại hai lệnh trên, và triệu chứng lúc đó là **mosh im lặng không kết nối được từ xa** — đúng lúc bạn không ngồi trước máy để sửa. Đây là lý do mosh không nằm trong đường chính.
 
-### B.3 Mở port trong ACL
+### B.3 Port cho mosh
 
 Với `--shields-up` ([Phase 6](#phase-6--một-chiều)) không cần mở port gì — shields chặn chiều vào máy này, còn mosh đi chiều ra tới Mac. Nếu bạn dùng ACL thay vì shields, thêm `"mac-cmp:60000-61000"` vào `dst`.
 
@@ -1698,7 +1726,26 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 
 ---
 
-## Thay đổi trong v4.1
+## Nhật ký thay đổi
+
+### v5.5 — đọc soát toàn văn: 4 mâu thuẫn, thêm mục trạng thái
+
+Tài liệu đã qua 14 bản vá trong hai ngày. Đọc soát một lượt như người lần đầu đọc, tìm chỗ thân bài nói một đằng changelog nói một nẻo.
+
+| Chỗ | Vấn đề |
+|---|---|
+| **Tham khảo nhanh** | Vẫn dạy `launchctl kickstart` sau rollback — §4.3 đã bỏ bước đó. Và lệnh thu hồi key ở đây vẫn là bản cũ dùng `<comment-key>`, **thiếu bước `grep` xem trước** mà v4.6 thêm vào §9.3 |
+| Bảng quyết định (mục 1) | Dòng ACL vẫn trình bày ACL như phương pháp mặc định |
+| Phụ lục B.3 | Tiêu đề còn là *"Mở port trong ACL"* dù thân bài đã nói shields-up không cần mở port |
+| Chân trang | Ghi "tính đến 22/09/2026" |
+
+Chỗ đầu nghiêm trọng nhất: **Tham khảo nhanh là thứ người ta copy khi đang hoảng**, và nó đang giữ bản thu hồi key thiếu lưới an toàn.
+
+**Thêm mục "Đang ở đâu"** ngay đầu tài liệu — bảng trạng thái từng phase kèm bằng chứng, để quay lại sau vài tháng không phải đọc lại 1900 dòng.
+
+**Gộp v4.1–v4.9** thành một bảng tóm tắt. Lý do của từng thay đổi đã nằm trong thân bài rồi, nên changelog chỉ cần giữ dấu vết: 296 → 181 dòng (14% → 9% tài liệu).
+
+---
 
 ### v5.4 — acceptance test có kết quả thật
 
@@ -1818,142 +1865,23 @@ Sửa theo các tham chiếu chết: Phụ lục B.3 (mosh), C (Screen Sharing),
 
 ---
 
-### v4.9 — preflight: sửa 6 lỗi
+### v4.1 – v4.9 — tóm tắt
 
-Script ở Phase 8 được review và test lại. Sáu lỗi, xếp theo mức nghiêm trọng:
+Chín bản vá trong ngày 22/09/2026, khi đối chiếu guide với máy thật lần đầu. Lý do của từng thay đổi đã được đưa vào đúng mục trong thân tài liệu, nên ở đây chỉ giữ dấu vết.
 
-| # | Lỗi | Hậu quả |
+| | Thay đổi | Đã ghi ở |
 |---|---|---|
-| 1 | Không tự đặt `PATH` | `tailscale`/`tmux`/`docker` ở `/usr/local/bin`, không có trong `PATH` phiên không tương tác → `macstatus` báo **CHƯA SẴN SÀNG** với 2 FAIL trên máy khoẻ mạnh |
-| 2 | `caffeinate ... &` thiếu `nohup` | Chạy qua `ssh host <cmd>`, caffeinate nhận SIGHUP và chết ngay khi script thoát — đúng lúc vừa bật nó để giữ máy thức |
-| 3 | `security show-keychain-info \| grep -qi 'lock'` | Output lúc keychain **đang mở** có chuỗi `lock-on-sleep` → báo động giả mỗi lần. Đã đổi sang dùng exit code |
-| 4 | `grep -c ... \|\| echo 0` | `grep -c` in `0` **và** trả exit 1 khi không khớp, nên `\|\|` nối thêm một `0` nữa → biến thành `"0\n0"` (đã kiểm chứng) |
-| 5 | `DSLEEP`/`PCT` rỗng | Không đọc được `pmset`/`df` thì báo "sleep: tắt" và "đĩa ổn" — sai lặng lẽ. Giờ in `skip` |
-| 6 | Không có `--help`, tham số lạ bị bỏ qua | `preflight --am` (gõ nhầm) chạy như không có tham số, không arm gì cả |
+| **v4.1** | Tên máy giả định → tên thật (`macos-comacpro`); FQDN Tailscale cho `HostName`; LUKS và `ssh-add -t` chuyển từ "cần kiểm tra" sang đã xác minh | [1.4](#14-admin-console--logintailscalecom) · [2.5](#25-sshconfig) · [9.1](#91-fedora) |
+| **v4.2** | Đặt lại tên: `id_ed25519_macwork` → `id_ed25519_macos-comacpro`, alias `mac-work` → `mac-cmp`. Tên tệp theo **máy đích**, alias theo quy ước `<thiết bị>-<tổ chức>` sẵn có | [2.3](#23-tạo-key-trên-fedora) |
+| **v4.3** | `ssh-add -l` gộp hai socket: gcr quảng bá mọi `~/.ssh/*.pub` từ đĩa, kể cả key chưa mở khoá | [2.6](#26-ssh-agent) |
+| **v4.4** | `RemoteCommand` cần đường dẫn tuyệt đối — phiên không tương tác không có `/usr/local/bin` trong `PATH` | [2.5](#25-sshconfig) |
+| **v4.5** | Mục *Danh tính Git* viết lại: Mac không phải tờ giấy trắng, nó là máy một danh tính đã cấu hình sẵn | [Phase 7](#phase-7--chuẩn-bị-môi-trường) |
+| **v4.6** | **Lỗi nghiêm trọng:** lệnh thu hồi key dùng sai chuỗi `grep -v`, nên nó ghi lại file y nguyên và không xoá gì. Thêm bước xem trước | [9.3](#93-runbook-mất-một-thiết-bị) |
+| **v4.7** | `ConnectTimeout 10` — thiếu nó, `ssh` tới Mac đang ngủ treo 130 giây. `ServerAlive*` không che được giai đoạn bắt tay | [2.5](#25-sshconfig) |
+| **v4.8** | Phase 8 không chạy được như viết: `PATH` phải đặt ở `.zshenv` chứ không `.zshrc`, alias phải dùng đường dẫn tuyệt đối | [8.1](#81-cài) · [8.3](#83-chạy-từ-fedora-bằng-một-lệnh) |
+| **v4.9** | preflight sửa 6 lỗi, quan trọng nhất là script tự đặt `PATH` — thiếu nó thì `macstatus` báo CHƯA SẴN SÀNG trên máy khoẻ mạnh | [8.1](#81-cài) |
 
-Thêm: tôn trọng `NO_COLOR`, `emulate -L zsh` để không dính tuỳ chọn shell của người dùng, `skip()` cho các mục không kiểm được, và mặc định session đổi sang `desk`.
-
-Bản dùng được: `dotfiles/mac/preflight`.
-
----
-
-### v4.8 — Phase 8 không chạy được như viết
-
-Ba lỗi cùng một gốc: **zsh chỉ nạp `.zshrc` cho phiên tương tác**, còn `ssh host <cmd>` là phiên không tương tác và chỉ nạp `.zshenv`.
-
-| | v4.7 | v4.8 |
-|---|---|---|
-| Cài `PATH` cho `~/bin` | `>> ~/.zshrc` | `>> ~/.zshenv` |
-| `PREFLIGHT_TMUX_SESSION` | `>> ~/.zshrc`, mặc định `phone` | Mặc định `desk` ngay trong script |
-| Alias 8.3 | `ssh mac-cmp-file preflight` | `ssh mac-cmp-file ~/bin/preflight` |
-
-Viết như v4.7 thì `macstatus` báo `command not found: preflight` dù script đã cài đúng. Đây **cùng một cái bẫy** với `RemoteCommand` ở v4.4 — lần này nó cắn ở Phase 8.
-
-Bằng chứng trên máy thật: `ssh mac-cmp-file 'echo $PATH'` → `/usr/bin:/bin:/usr/sbin:/sbin`.
-
-Thêm `macarm` và `macup`. `macup` chỉ hỏi Tailscale, không SSH — 0 giây thay vì 10 giây timeout khi Mac ngủ.
-
----
-
-### v4.7 — `ConnectTimeout`, và Mac ngủ chứ không tắt
-
-Đo được khi Mac không truy cập được (22/09/2026):
-
-| | Trước | Sau |
-|---|---|---|
-| `ssh mac-cmp-file` tới Mac đang ngủ | **130 giây** rồi mới bỏ cuộc | **10 giây** |
-| `mac-cmp-file` | Không có `ConnectTimeout` lẫn `ServerAliveInterval` | Có cả hai |
-
-`ServerAliveInterval` bị hiểu nhầm là chống treo — nó chỉ phát hiện kết nối **đã thiết lập** bị chết, không làm gì cho giai đoạn bắt tay. Khối `mac-cmp-file` — dùng cho `rsync`/`scp`, tức thao tác dài dễ đứt nhất — trước đây thiếu cả hai tham số.
-
-**Và một phân biệt quan trọng:** `uptime` trên Mac cho thấy `up 28 days` — máy chưa hề tắt, nó **ngủ**. Tailscale báo máy ngủ và máy tắt giống hệt nhau (`offline, last seen …`). Trong lúc đo, nó tỉnh một lần rồi ngủ lại trong cùng một phiên. Xem [Phase 10.3](#103-mac-ngủ--vấn-đề-vận-hành-chính).
-
----
-
-### v4.6 — sửa lỗi trong quy trình thu hồi, và hai điều đo được sau khi chạy thật
-
-**Lỗi nghiêm trọng đã sửa:** lệnh thu hồi key ở [9.3](#93-runbook-mất-một-thiết-bị) dùng `grep -v 'fedora-home'`, nhưng comment thật trong `authorized_keys` trên Mac là `tainjiao-dotdev`. Chuỗi sai thì `grep -v` khớp **mọi** dòng, ghi lại file y nguyên và **không xoá gì** — trong khi bạn tưởng đã thu hồi xong. Lỗi im lặng, đúng vào lúc tệ nhất. Giờ có bước `grep` xem trước và `wc -l` đối chiếu.
-
-| | v4.5 | v4.6 |
-|---|---|---|
-| Lệnh thu hồi | `grep -v 'fedora-home'` | `tainjiao-dotdev` + xem trước + đếm dòng |
-| Comment trong `authorized_keys` | `fedora-home` | `tainjiao-dotdev` (đã đối chiếu với Mac thật) |
-| Tên Fedora trên tailnet | `fedora-home` | `tainjiao-dotdev` (ACL, ping, acceptance test) |
-| §2.3 passphrase | Chỉ bảo "đặt passphrase" | Thêm bẫy askpass — `ssh-keygen` nuốt passphrase mà vẫn báo thành công |
-| §2.7 | (không có) | Mới — passphrase và `login.keyring`: key đã mã hoá nhưng gnome-keyring tự mở khi đăng nhập |
-| §2.6 ghi chú agent | "key Mac chưa từng mở khoá" | Đã cũ — giờ nó nằm mở trong agent |
-
----
-
-### v4.5 — mục *Danh tính Git* viết lại theo hiện trạng thật của Mac
-
-v4.4 mô tả Mac như một máy chưa có cấu hình Git, với hệ quả "commit sai tên và không có chữ ký". Đo thực tế thì sai: Mac đã có `user.name`/`user.email` của CMP và một khoá GitHub riêng (`id_github_org`) từ trước, cùng `~/.ssh/config` trỏ đúng khoá đó.
-
-Mac là máy **một danh tính** được cấu hình đúng cho khách hàng đó. Rủi ro thật hẹp hơn: commit không được ký, email toàn cục nên không chặn được repo lạ, và `~/.ssh/config` của Mac thiếu `IdentitiesOnly yes`. Mục này giờ ghi hiện trạng đo được và ba lệnh để bật ký commit trên Mac.
-
----
-
-### v4.4 — `RemoteCommand` cần đường dẫn tuyệt đối
-
-Phát hiện khi chạy thật (22/09/2026). `RemoteCommand tmux new -A -s desk` chết với `command not found: tmux` mặc dù `brew install tmux` đã thành công.
-
-Nguyên nhân: `RemoteCommand` chạy qua zsh không tương tác, `.zshrc` không được đọc, `PATH` chỉ còn `/usr/bin:/bin:/usr/sbin:/sbin`. Homebrew ở `/usr/local/bin` nằm ngoài PATH đó. Đây là cùng một gốc với vấn đề mosh ở Phụ lục B.1, nhưng nó cắn ngay từ Phase 2 chứ không đợi tới phụ lục.
-
-| | v4.3 | v4.4 |
-|---|---|---|
-| §2.5 `RemoteCommand` | `tmux new -A -s desk` | `/usr/local/bin/tmux new -A -s desk` |
-| §2.5 cảnh báo | Chỉ nói `RemoteCommand` phá scp/rsync | Thêm "Bẫy thứ nhất" về PATH, kèm lệnh kiểm tra đường dẫn thật |
-
-Triệu chứng dễ nhầm: `ssh mac-cmp-file` vào được bình thường (không có `RemoteCommand`) trong khi `ssh mac-cmp` chết — trông như lỗi alias chứ không phải lỗi PATH.
-
----
-
-### v4.3 — `ssh-add -l` và cơ chế hai socket
-
-Sửa một kết luận sai trong v4.2. Lúc tạo key mới, nó xuất hiện trong `ssh-add -l` ngay mà không cần `ssh-add` — v4.2 diễn giải đó là "GNOME Keyring tự nạp key, passphrase mất tác dụng". Sai.
-
-Thực tế: `gcr-ssh-agent` liệt kê mọi `~/.ssh/*.pub` trên đĩa, kể cả key có passphrase nó chưa mở được. Kiểm chứng bằng một key mồi **có passphrase** — vẫn hiện ra ngay. Hai socket riêng biệt, `$SSH_AUTH_SOCK` trỏ vào lớp proxy chứ không phải agent thật.
-
-| | v4.2 | v4.3 |
-|---|---|---|
-| Mục §2.6 cuối | "Một ẩn số còn lại" | Mục *`ssh-add -l` nói dối* — cơ chế hai socket, cách kiểm key nào thật sự mở khoá |
-| Bảng "chưa xác minh" | Còn treo câu hỏi tự nạp key | Đã xác minh: không tự nạp, chỉ quảng bá |
-| Checklist Phase 2 | Kiểm `ssh-add -l` sau reboot | Kiểm qua socket agent thật |
-
-Passphrase vẫn cần thiết và vẫn có tác dụng — chỉ là lý do lo lắng ở v4.2 không đúng.
-
----
-
-### v4.2 — đặt lại tên khoá và alias
-
-| | v4 / v4.1 | v4.2 | Vì sao |
-|---|---|---|---|
-| Tên tệp khoá | `id_ed25519_macwork` | `id_ed25519_macos-comacpro` | Đặt theo **máy đích**. Hostname đã chứa tên tổ chức, nên không cần lấn sang trục danh tính của ba khoá Git |
-| Alias SSH | `mac-work` | `mac-cmp` | Theo quy ước sẵn có trong `~/.ssh/config`: `github.com-cmp`, `github.com-gmo` — **tổ chức đứng sau** |
-| Alias kênh sạch | `mac-work-file` | `mac-cmp-file` | Theo alias chính |
-| Nhãn ACL | `mac-work` | `mac-cmp` | Cho khớp, dù nhãn ACL độc lập về kỹ thuật |
-| Comment `-C` | `fedora-home` | `tainjiao-dotdev` | Tên máy thật đang giữ khoá — đó là chuỗi `grep -v` để thu hồi |
-
-Máy công ty thứ hai sau này đặt `id_ed25519_<host>` riêng và alias `mac-gmo` / `<thiết bị>-<tổ chức>`.
-
----
-
-### v4.1 — đối chiếu với máy thật
-
-Vá sau khi đối chiếu guide với cấu hình thật trên `tainjiao-dotdev` (22/09/2026). Không có thay đổi nào về kiến trúc — chỉ thay giá trị giả định bằng giá trị đã đo, và bổ sung hai chỗ còn thiếu.
-
-| | Thay đổi | Vì sao |
-|---|---|---|
-| **Tên máy** | `mac-work` (tên tailnet giả định) → `macos-comacpro` (tên thật); alias SSH đổi thành `mac-cmp` ở v4.2 | Máy đã tồn tại trên tailnet với tên đó và `known_hosts` đã có entry. Đổi tên trong admin là công vô ích |
-| **`HostName`** trong `~/.ssh/config` | → FQDN `macos-comacpro.taila30e8c.ts.net` | v4 viết `Host mac-work` + `HostName mac-work` — self-reference vô nghĩa |
-| **Client không đọc ssh config** (Safari/iPhone, Termius, Remmina, `ping`) | → dùng tên máy thật | Alias SSH chỉ tồn tại trong `~/.ssh/config` của Fedora |
-| **LUKS** ([9.1](#91-fedora)) | Từ "cần kiểm tra" → **đã xác minh có**, kèm ghi chú vì sao vẫn cần passphrase | `nvme0n1p3` là `crypto_LUKS`, cả `/` lẫn `/home` nằm trên đó |
-| **GNOME Keyring + `ssh-add -t`** ([2.6](#26-ssh-agent)) | Từ "có thể bỏ qua `-t`" → **đã xác minh tôn trọng `-t`**, kèm bài test 70 giây và lý do kiến trúc | `gcr-ssh-agent` là wrapper proxy tới `ssh-agent` chuẩn của OpenSSH |
-| **Bảng "chưa xác minh"** | Dòng GNOME Keyring chuyển sang đã xác minh; thêm dòng mới về việc tự nạp key lúc đăng nhập | Bài test trả lời được câu hỏi cũ nhưng để lộ một câu hỏi khác |
-| **Phase 7** | Thêm mục *Danh tính Git nằm trên Fedora* và *Đừng bật `ForwardAgent`* | v4 không nhắc tới cả hai |
-| **ACL** ([Phase 6](#phase-6--một-chiều)) | Điền IP thật; làm rõ `mac-cmp` ở đó là **nhãn ACL**, không phải DNS hay alias SSH | Ba thứ trùng tên nhau là nguồn nhầm lẫn |
-
-**Không đổi:** kiến trúc Tailscale, thứ tự phase, `IdentitiesOnly yes`, hai entry cho Mac (một có `RemoteCommand`, một không), cảnh báo `RemoteCommand` phá `scp`/`rsync`, toàn bộ Phase 4–6 và 8–10.
+Điểm chung của gần như toàn bộ danh sách: **mọi lỗi đều im lặng.** Không cái nào báo lỗi rõ ràng — chúng chỉ làm sai một cách êm ả cho tới khi ai đó đo.
 
 ---
 
@@ -1982,15 +1910,19 @@ sudo sshd -T | grep -E '^(passwordauthentication|allowusers)'
 
 # ── Khôi phục sshd (chạy TẠI Mac) ────────────────────────
 sudo rm /etc/ssh/sshd_config.d/100-local.conf
-sudo launchctl kickstart -k system/com.openssh.sshd
+# Không cần restart: sshd là socket-activated, kết nối kế tiếp đọc lại config
 
-# ── Mất thiết bị (theo thứ tự) ───────────────────────────
-# 1. Admin console → Machines → xoá thiết bị
-# 2. grep -v '<comment-key>' ~/.ssh/authorized_keys > /tmp/ak && mv /tmp/ak ~/.ssh/authorized_keys
+# ── Mất thiết bị (theo thứ tự — xem 9.3) ─────────────────
+# 1. Admin console → Machines → xoá thiết bị   ← cắt mạng, làm TRƯỚC
+# 2. Trên Mac, XEM TRƯỚC rồi mới xoá:
+#      grep 'tainjiao-dotdev' ~/.ssh/authorized_keys
+#      grep -v 'tainjiao-dotdev' ~/.ssh/authorized_keys > /tmp/ak && mv /tmp/ak ~/.ssh/authorized_keys
+#      chmod 600 ~/.ssh/authorized_keys && wc -l ~/.ssh/authorized_keys   # giảm đúng 1 dòng
+#    Chuỗi sai → grep -v khớp MỌI dòng → ghi lại y nguyên, không xoá gì
 # 3. Xoá từ xa thiết bị
 # 4. Đổi password macOS
 ```
 
 ---
 
-*Guide này mô tả trạng thái công cụ tính đến 22/09/2026. Phần "Những gì chưa xác minh được" liệt kê các điểm cần tự kiểm tra trên máy bạn.*
+*Guide này mô tả trạng thái công cụ tính đến 23/09/2026, và đã được chạy thật đầu-cuối trên `tainjiao-dotdev` ↔ `macos-comacpro` — xem [Acceptance test](#acceptance-test). Phần "Những gì chưa xác minh được" liệt kê các điểm còn phải tự kiểm tra trên máy bạn.*

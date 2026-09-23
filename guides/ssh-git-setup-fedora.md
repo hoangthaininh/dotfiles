@@ -21,11 +21,14 @@
 - [8. Máy công ty qua Tailscale](#8-máy-công-ty-qua-tailscale)
 - [9. Vì sao guide khác máy cũ](#9-vì-sao-guide-khác-máy-cũ)
 - [10. Những bẫy đã gặp thật](#10-những-bẫy-đã-gặp-thật)
-- [11. Checklist xác minh](#11-checklist-xác-minh)
+- [11. Tự động hoá kèm theo](#11-tự-động-hoá-kèm-theo)
+- [12. Checklist xác minh](#12-checklist-xác-minh)
 
 ---
 
-> **Trạng thái đồng bộ (22/09/2026):** ba thay đổi ở [§9.1](#91-bỏ-useremail-toàn-cục--fail-closed), [§9.2](#92-thu-hẹp-insteadof) và [§9.3](#93-thêm-fsckobjects) **đã được áp lên máy Fedora 44 đang chạy** và xác minh đạt. Guide và máy hiện khớp nhau, trừ phần GMO — xem [§9.5](#95-bỏ-gmo).
+> **Trạng thái đồng bộ (23/09/2026):** toàn bộ thay đổi ở [§9](#9-vì-sao-guide-khác-máy-cũ) **đã áp lên máy Fedora 44 đang chạy** và xác minh đạt. Guide và máy khớp nhau, trừ phần GMO — xem [§9.5](#95-bỏ-gmo).
+>
+> **Phạm vi:** tài liệu này lo SSH + Git trên Fedora. Phần máy công ty macOS (harden sshd, preflight, shields-up) và phần rà hệ thống Fedora (dịch vụ thừa, cổng Docker, `passim`) nằm ở `guides/remote-access-runbook.md`.
 
 ---
 
@@ -726,7 +729,36 @@ scp mac-cmp-file:~/log.txt .
 
 ---
 
-## 11. Checklist xác minh
+## 11. Tự động hoá kèm theo
+
+Một thứ duy nhất, và nó không thuộc SSH lẫn Git — nhưng sẽ mất nếu không ghi ở đây.
+
+### Cảnh báo node key Tailscale sắp hết hạn
+
+Node key hết hạn là máy rơi khỏi tailnet, và `tailscale up --force-reauth` **cần GUI tại máy** — không sửa được từ xa. Lỗi im lặng suốt nhiều tháng cho tới đúng ngày nó khoá bạn ra ngoài.
+
+Một sự kiện lịch sẽ lạc hậu ngay sau lần re-auth kế tiếp. Timer này đọc giá trị thật mỗi ngày nên tự đúng:
+
+```bash
+mkdir -p ~/.config/systemd/user
+ln -sf ~/Workspace/personal/dotfiles/systemd/user/tailscale-key-expiry.service ~/.config/systemd/user/
+ln -sf ~/Workspace/personal/dotfiles/systemd/user/tailscale-key-expiry.timer   ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now tailscale-key-expiry.timer
+```
+
+Kiểm:
+
+```bash
+systemctl --user list-timers tailscale-key-expiry.timer
+TS_KEY_WARN_DAYS=9999 ~/Workspace/personal/dotfiles/bin/tailscale-key-expiry   # ép hiện thông báo
+```
+
+Ngưỡng mặc định 30 ngày. Script và unit nằm ở `dotfiles/bin/` và `dotfiles/systemd/` — xem `systemd/README.md`.
+
+---
+
+## 12. Checklist xác minh
 
 Chạy hết sau khi dựng xong. Mỗi lệnh trả lời một câu hỏi khác nhau.
 
