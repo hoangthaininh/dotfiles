@@ -1,0 +1,7 @@
+[Unit]
+Description=Warn before the Tailscale node key expires
+Documentation=file:%h/Workspace/personal/dotfiles/guides/remote-access-runbook.md
+
+[Service]
+Type=oneshot
+ExecStart=%h/Workspace/personal/dotfiles/bin/tailscale-key-expiry

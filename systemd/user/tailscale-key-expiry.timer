@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily check of Tailscale node key expiry
+
+[Timer]
+# Daily, but Persistent catches up after the machine was off at the scheduled
+# time — a laptop misses plenty of fixed schedules.
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

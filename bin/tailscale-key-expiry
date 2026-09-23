@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Warn before this machine's Tailscale node key expires.
+#
+# Why this exists: an expired node key drops the machine off the tailnet, and
+# `tailscale up --force-reauth` needs a GUI session AT the machine. There is no
+# remote fix. The failure is silent until the day it locks you out.
+#
+# Checks the real value rather than a hardcoded date, so it stays correct across
+# re-auths. Run daily by systemd/user/tailscale-key-expiry.timer.
+#
+# Exit 0 always: a monitoring job that fails loudly on a laptop that happens to
+# be offline is worse than one that stays quiet.
+
+set -uo pipefail
+
+WARN_DAYS="${TS_KEY_WARN_DAYS:-30}"
+
+command -v tailscale >/dev/null 2>&1 || exit 0
+
+days=$(tailscale status --json 2>/dev/null | python3 -c '
+import sys, json, datetime
+try:
+    exp = json.load(sys.stdin).get("Self", {}).get("KeyExpiry")
+    if not exp:            # key expiry disabled for this node
+        sys.exit(1)
+    dt = datetime.datetime.fromisoformat(exp.replace("Z", "+00:00"))
+    print((dt - datetime.datetime.now(datetime.timezone.utc)).days)
+except Exception:
+    sys.exit(1)
+') || exit 0
+
+[[ "$days" =~ ^-?[0-9]+$ ]] || exit 0
+(( days > WARN_DAYS )) && exit 0
+
+if (( days < 0 )); then
+    title="Tailscale: node key ĐÃ HẾT HẠN"
+    body="Máy đã rơi khỏi tailnet. Cần re-auth TẠI MÁY: tailscale up --force-reauth"
+    urgency=critical
+else
+    title="Tailscale: node key còn ${days} ngày"
+    body="Re-auth cần GUI tại máy, không làm được từ xa. Chạy: tailscale up --force-reauth"
+    urgency=critical
+fi
+
+notify-send -u "$urgency" -a "Tailscale" "$title" "$body" 2>/dev/null
+logger -t tailscale-key-expiry "$title"
+exit 0
