@@ -1,6 +1,6 @@
 # Remote access: điều khiển máy công ty (macOS) từ xa — Runbook
 
-**Phiên bản:** v5.3 · 23/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
+**Phiên bản:** v5.4 · 23/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
 **Máy đích:** macOS 15, Intel Core i5 (máy công ty) · iTerm2 tại bàn
 **Client:** Fedora 44 (máy cá nhân, đường chính) · iPhone (tuỳ chọn)
 
@@ -1399,6 +1399,23 @@ tailscale status | grep macos-comacpro
 
 Chạy sau khi hoàn thành Phase 1–10. Tất cả phải pass trước khi bạn tin vào setup này.
 
+> ### Kết quả chạy thật — 23/09/2026
+>
+> | Bước | Kết quả |
+> |---|---|
+> | `preflight` | ✅ `SẴN SÀNG (có cảnh báo)`, exit 0 — cảnh báo duy nhất là Docker Desktop chưa mở |
+> | `sshd -T \| grep passwordauthentication` | ✅ `no` |
+> | Đo từ Fedora: `PreferredAuthentications=none` | ✅ `Permission denied (publickey)` — trước harden là `publickey,password,keyboard-interactive` |
+> | 1. `ssh mac-cmp` → tmux `desk` | ✅ vào thẳng session |
+> | 7. `rsync … mac-cmp-file:~/` | ✅ file đi và về đúng |
+> | 9. Từ Mac `ping tainjiao-dotdev` | ✅ **100% packet loss** · `nc -z … 22` đóng — shields-up hiệu lực |
+> | Nguồn: `pmset -g` | ✅ `sleep 0` — giữ được **sau khi gỡ `caffeinate`**, nên máy ở lại tailnet nhờ cấu hình chứ không nhờ một tiến trình phải nhớ bật |
+> | Auto-update macOS | ✅ `AutomaticallyInstallMacOSUpdates = 0` |
+>
+> **Chưa chạy:** bước 2–6 và 8 (cần thao tác tương tác), Phase 3 (iPhone, tuỳ chọn), Phase 5 (`.tmux.conf`), Phase 7, Phase 9.2–9.3, Phase 10.2 (lịch nhắc — node key còn 179 ngày).
+>
+> **Lưu ý bước 8** (`ssh-add -D && ssh mac-cmp` phải hỏi passphrase): trên máy này gnome-keyring đã lưu passphrase vào `login.keyring` nên nó có thể **không** hỏi. Đó không phải lỗi — xem [2.7](#27-passphrase-và-login-keyring).
+
 **Trên Mac:**
 
 ```bash
@@ -1417,7 +1434,11 @@ tailscale status                             # thấy mọi thiết bị
 6. `cd ~/projects && git status` → chạy được (đổi sang thư mục code thật của bạn)
 7. `rsync -av /tmp/test.txt mac-cmp-file:~/` → chuyển file được
 8. `ssh-add -D && ssh mac-cmp` → **phải hỏi passphrase** (xác nhận key thật sự có passphrase)
-9. **Trên Mac:** `ping tainjiao-dotdev` → phải FAIL
+9. **Trên Mac:** `ping tainjiao-dotdev` → phải FAIL. Kiểm thêm cổng cho chắc:
+   ```bash
+   # ── trên MAC ──
+   nc -z -G 3 tainjiao-dotdev 22 && echo "MỞ — shields không hiệu lực" || echo "đóng — đúng"
+   ```
 
 Bước 3 và 4 chứng minh tmux thực sự làm được việc của nó. Bước 7 xác nhận entry `mac-cmp-file` hoạt động. Bước 9 xác nhận Phase 6.
 
@@ -1428,25 +1449,26 @@ Bước 3 và 4 chứng minh tmux thực sự làm được việc của nó. B�
 ## Checklist triển khai
 
 ```
-[ ]  0  Xác nhận IT/security; xác định tailnet cá nhân hay công ty
+[x]  0  Xác nhận IT/security; xác định tailnet cá nhân hay công ty
 [ ]  0  Đọc Phụ lục D — đích thật là Mac hay là server?
 [ ]  1  Mac: gỡ Tailscale App Store nếu có (xoá → Trash → reboot)
-[ ]  1  Mac: cài standalone, system extension, MagicDNS (tên máy: macos-comacpro)
-[ ]  1  Fedora: dnf5 addrepo → install → enable --now → tailscale up
-[ ]  1  Checkpoint: ping macos-comacpro từ Fedora
-[ ]  2  Mac: Remote Login (Only these users); test password từ Fedora
-[ ]  2  Fedora: ssh-keygen CÓ passphrase → ssh-copy-id → test
-[ ]  2  Fedora: ~/.ssh/config (2 entry: mac-cmp và mac-cmp-file)
-[ ]  2  Fedora: ssh-add -t 8h; kiểm key nào thật sự mở khoá bằng SSH_AUTH_SOCK=/run/user/1000/gcr/.ssh ssh-add -l
-[ ]  2  Fedora: KHÔNG bật ForwardAgent; dựng git identity riêng trên Mac nếu định commit ở đó
+[x]  1  Mac: cài standalone, system extension, MagicDNS (tên máy: macos-comacpro)
+[x]  1  Fedora: dnf5 addrepo → install → enable --now → tailscale up
+[x]  1  Checkpoint: ping macos-comacpro từ Fedora
+[x]  2  Mac: Remote Login (Only these users); test password từ Fedora
+[x]  2  Fedora: ssh-keygen CÓ passphrase → ssh-copy-id → test
+[x]  2  Fedora: ~/.ssh/config (2 entry: mac-cmp và mac-cmp-file)
+[x]  2  Fedora: ssh-add -t 8h; kiểm key nào thật sự mở khoá bằng SSH_AUTH_SOCK=/run/user/1000/gcr/.ssh ssh-add -l
+[x]  2  Fedora: KHÔNG bật ForwardAgent; dựng git identity riêng trên Mac nếu định commit ở đó
 [ ]  3  (tuỳ chọn) iPhone: Tailscale, tắt sync Termius, key, host
-[ ]  4  grep Include → scp+install drop-in → sshd -T → kiểm từ Fedora → đóng tab
+[x]  4  grep Include → scp+install drop-in → sshd -T → kiểm từ Fedora → đóng tab
 [ ]  5  Mac: tmux + .tmux.conf
-[ ]  6  Fedora: tailscale set --shields-up
+[x]  6  Fedora: tailscale set --shields-up
 [ ]  7  git remote sang SSH; app GUI chạy sẵn
-[ ]  8  Cài preflight vào ~/bin; đặt PREFLIGHT_TMUX_SESSION=desk
-[ ]  9  Fedora: xác nhận LUKS; khoá màn hình; đọc runbook mất thiết bị
-[ ] 10  Tắt auto-install macOS updates; nhắc lịch re-auth (ngày 150)
+[x]  8  Cài preflight vào ~/bin (mặc định session đã là 'desk', không cần biến môi trường)
+[x]  9  Fedora: xác nhận LUKS (nvme0n1p3 crypto_LUKS, cả / lẫn /home)
+[ ]  9  Fedora: khoá màn hình ≤5 phút; đọc runbook mất thiết bị 9.3
+[x] 10  Tắt auto-install macOS updates; nhắc lịch re-auth (ngày 150)
 [ ]  ✓  Chạy Acceptance test đầy đủ
 ```
 
@@ -1677,6 +1699,25 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 ---
 
 ## Thay đổi trong v4.1
+
+### v5.4 — acceptance test có kết quả thật
+
+Ghi kết quả đo được vào đầu mục Acceptance test, thay vì để nó là danh sách việc phải làm. Tám mục đã chạy và pass; những mục chưa chạy được liệt kê thẳng thay vì im lặng.
+
+Đáng chú ý nhất là **bước 9** — lần đầu có bằng chứng `--shields-up` thật sự chặn chiều Mac → Fedora:
+
+```
+ping tainjiao-dotdev   → 100.0% packet loss
+nc -z … 22             → đóng
+```
+
+Và **`sleep 0` giữ được sau khi gỡ `caffeinate`**: máy ở lại tailnet nhờ cấu hình nguồn chứ không nhờ một tiến trình phải nhớ bật. `preflight --arm` từ bắt buộc xuống tuỳ chọn.
+
+Thêm cảnh báo cho bước 8: gnome-keyring lưu passphrase trong `login.keyring` nên `ssh-add -D` rồi kết nối có thể **không** hỏi passphrase — đúng như [2.7](#27-passphrase-và-login-keyring) mô tả, không phải lỗi.
+
+Bước 9 thêm lệnh `nc -z` bên cạnh `ping`, vì ICMP và TCP có thể bị lọc khác nhau.
+
+---
 
 ### v5.3 — Phase 4 chạy thật: bỏ một bước thừa, sửa một lời giải thích sai
 
