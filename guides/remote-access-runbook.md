@@ -1,6 +1,6 @@
 # Remote access: điều khiển máy công ty (macOS) từ xa — Runbook
 
-**Phiên bản:** v5.5 · 23/09/2026 · [nhật ký thay đổi](#nhật-ký-thay-đổi)
+**Phiên bản:** v5.6 · 23/09/2026 · [nhật ký thay đổi](#nhật-ký-thay-đổi)
 **Máy đích:** macOS 15, Intel Core i5 (máy công ty) · iTerm2 tại bàn
 **Client:** Fedora 44 (máy cá nhân, đường chính) · iPhone (tuỳ chọn)
 
@@ -16,7 +16,7 @@ Setup đã chạy và được kiểm chứng đầu-cuối. Bảng này để b
 | 2 Client Fedora | ✅ | Key có passphrase, `~/.ssh/config` 2 khối, `known_hosts` đã đối chiếu |
 | 3 iPhone | ⬜ tuỳ chọn | Bỏ qua được |
 | 4 Harden sshd | ✅ | Đo từ ngoài: `Permission denied (publickey)` |
-| 5 tmux config | ⬜ | tmux 3.7c đã chạy; đây chỉ là `.tmux.conf` |
+| 5 tmux config | ✅ | `~/.config/tmux/tmux.conf` — prefix, màu, `pbcopy` đã nạp |
 | 6 Một chiều | ✅ | Từ Mac: `ping` 100% loss, port 22 đóng |
 | 7 Môi trường | ⬜ | Chỉ cần mở Docker Desktop trước khi rời bàn |
 | 8 Preflight | ✅ | `~/bin/preflight` → `SẴN SÀNG`, exit 0 |
@@ -692,23 +692,50 @@ Không cần restart — kết nối kế tiếp trở lại như cũ ngay.
 Không có tmux thì mỗi lần rớt mạng là mất toàn bộ công việc đang dở. Đây là thứ biến SSH từ "dùng tạm" thành "dùng thật".
 
 ```bash
-# trên Mac
+# ── trên MAC ──
 brew install tmux
-
-cat >> ~/.tmux.conf <<'CONF'
-set -g mouse on
-set -g history-limit 50000
-set -sg escape-time 10
-CONF
 ```
 
-| Dòng | Vì sao |
-|---|---|
-| `mouse on` | Cuộn và chọn pane bằng chuột/ngón tay |
-| `history-limit 50000` | Đọc log dài không mất đoạn đầu |
-| `escape-time 10` | Mặc định 500ms gây trễ khó chịu trong vim qua mạng |
+### 5.1 Config: cùng phản xạ, khác nền tảng
 
-Nếu bạn dùng iPhone, thêm `set -g status-position top` — **bàn phím ảo iOS che mất đáy màn hình**. Trên Fedora không cần.
+Bản tối thiểu (`mouse on`, `history-limit`, `escape-time`) đủ để tmux dùng được. Nhưng nếu bạn đã có `tmux.conf` trên máy client, **chép phản xạ sang là đáng** — bạn sẽ chuyển qua lại giữa hai máy suốt ngày, và phím tắt khác nhau là nguồn sai lầm nhỏ nhưng liên tục.
+
+Đừng chép nguyên tệp. Ba thứ không port được:
+
+| Trên Linux | Trên macOS |
+|---|---|
+| `wl-copy` (Wayland) | `pbcopy` |
+| Popup gọi hàm zsh cục bộ (`tp`) | Bỏ — hàm đó không tồn tại bên Mac |
+| Prefix `C-s` dựa vào `NO_FLOW_CONTROL` của zsh | Xem cảnh báo dưới |
+
+> **`pbcopy` không cần `reattach-to-user-namespace`.** Trình bao bọc đó cần cho macOS 10.x; từ 10.12 trở đi tmux gọi thẳng `pbcopy` được. Đã xác nhận trên macOS 15.7.9 + tmux 3.7c.
+
+> **Prefix `C-s` và flow control.** tmux đọc terminal của client ở chế độ raw nên **bản thân prefix hoạt động bình thường**. Nhưng nếu bạn bấm prefix hai lần để gửi một `C-s` **thật** xuống shell, và zsh của máy đó chưa tắt XON/XOFF, pane sẽ đứng cho tới khi bấm `C-q`. Sửa: `echo 'stty -ixon' >> ~/.zshrc` trên Mac.
+
+Đặt tại `~/.config/tmux/tmux.conf` (XDG, tmux ≥3.1 hỗ trợ) cho khớp phía Fedora, thay vì `~/.tmux.conf`.
+
+Bản đã dùng thật: `dotfiles/mac/tmux.conf`. Deploy:
+
+```bash
+# ── trên FEDORA ──
+ssh mac-cmp-file 'mkdir -p ~/.config/tmux'
+scp mac/tmux.conf mac-cmp-file:~/.config/tmux/tmux.conf
+ssh mac-cmp-file '/usr/local/bin/tmux kill-server; /usr/local/bin/tmux new -d -s desk'
+```
+
+Xác minh giá trị **thực tế đã nạp**, không đọc tệp:
+
+```bash
+ssh mac-cmp-file '/usr/local/bin/tmux show-options -g  | grep -E "^(prefix|status-position|history-limit|mouse) "
+                  /usr/local/bin/tmux show-options -sg | grep escape-time
+                  /usr/local/bin/tmux list-keys | grep -c pbcopy'
+```
+
+Đo được 23/09/2026: `prefix C-s` · `status-position top` · `history-limit 50000` · `mouse on` · `escape-time 10` · 2 binding `pbcopy`.
+
+> **`status-position top`** ở đây không phải vì iPhone. Starship cũng cài trên Mac, prompt hai dòng, nên status bar ở đáy sẽ đè lên nó — cùng lý do với phía Fedora. Nếu bạn dùng iPhone thì nó còn giải quyết chuyện bàn phím ảo iOS che đáy màn hình.
+>
+> Một khác biệt có chủ đích: `status-right` bên Mac có chữ `mac`. Hai máy cùng bảng màu nên nhìn giống hệt nhau — cần một thứ để biết đang nhìn máy nào.
 
 ### Một session hay nhiều?
 
@@ -1490,7 +1517,7 @@ Bước 3 và 4 chứng minh tmux thực sự làm được việc của nó. B�
 [x]  2  Fedora: KHÔNG bật ForwardAgent; dựng git identity riêng trên Mac nếu định commit ở đó
 [ ]  3  (tuỳ chọn) iPhone: Tailscale, tắt sync Termius, key, host
 [x]  4  grep Include → scp+install drop-in → sshd -T → kiểm từ Fedora → đóng tab
-[ ]  5  Mac: tmux + .tmux.conf
+[x]  5  Mac: tmux + ~/.config/tmux/tmux.conf (mac/tmux.conf)
 [x]  6  Fedora: tailscale set --shields-up
 [ ]  7  git remote sang SSH; app GUI chạy sẵn
 [x]  8  Cài preflight vào ~/bin (mặc định session đã là 'desk', không cần biến môi trường)
@@ -1727,6 +1754,22 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 ---
 
 ## Nhật ký thay đổi
+
+### v5.6 — Phase 5 có config thật
+
+Phase 5 trước đây là ba dòng `set -g`. Đủ để chạy, nhưng bỏ qua điều quan trọng nhất khi bạn dùng hai máy: **phản xạ phím phải giống nhau**.
+
+Viết `mac/tmux.conf` port từ bản Fedora, với ba chỗ không port được ghi rõ lý do — `wl-copy` → `pbcopy`, bỏ popup gọi hàm zsh cục bộ, và cảnh báo về `C-s` với flow control.
+
+Ba điều đo được, không đoán:
+
+- `pbcopy` chạy thẳng trên macOS 15.7.9 + tmux 3.7c, **không cần** `reattach-to-user-namespace` — trình bao bọc đó chỉ cần cho macOS 10.x.
+- Hai máy cùng tmux **3.7c** nên không có chênh lệch tính năng.
+- Prefix `C-s` hoạt động vì tmux đọc terminal ở chế độ raw; chỉ literal `C-s` gửi xuống shell mới đứng pane, và zsh của Mac chưa tắt XON/XOFF.
+
+Thêm bước xác minh bằng `show-options`/`list-keys` — đọc giá trị đã nạp thay vì tin nội dung tệp.
+
+---
 
 ### v5.5 — đọc soát toàn văn: 4 mâu thuẫn, thêm mục trạng thái
 
