@@ -1,6 +1,6 @@
 # Remote access: điều khiển máy công ty (macOS) từ xa — Runbook
 
-**Phiên bản:** v5.2 · 23/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
+**Phiên bản:** v5.3 · 23/09/2026 · [thay đổi so với v4](#thay-đổi-trong-v41)
 **Máy đích:** macOS 15, Intel Core i5 (máy công ty) · iTerm2 tại bàn
 **Client:** Fedora 44 (máy cá nhân, đường chính) · iPhone (tuỳ chọn)
 
@@ -500,7 +500,10 @@ Session tên `phone` **khác** session `desk` của Fedora — xem [Phase 5](#ph
 
 > ### ⚠️ Bước này khoá được bạn ra khỏi máy
 > Mở một tab iTerm2 trên Mac, chạy `ssh localhost`, **giữ nguyên tab đó cho tới hết Phase 4.**
-> Session SSH đang mở **sống sót** qua việc restart sshd — chỉ listener khởi động lại. Đó là đường thoát duy nhất.
+>
+> Session đang mở **sống sót**, nhưng không phải vì "chỉ listener khởi động lại" — trên macOS **không có listener nào cả**. Chính launchd giữ socket port 22 và sinh một `sshd-session` mới cho mỗi kết nối. Job khai `abandon process group`, nghĩa là launchd cố ý không quản các tiến trình con đã sinh. Thấy được trong cây tiến trình: phiên đang mở có cha là **PID 1**, không phải một sshd mẹ.
+>
+> Hệ quả: đường lui vững hơn tài liệu cũ mô tả, và **cấu hình có hiệu lực ngay ở kết nối kế tiếp mà không cần restart gì**.
 
 Chỉ làm sau khi **mọi client** đã test được bằng key. Tắt password auth khi key chưa chạy là tự khoá mình.
 
@@ -517,24 +520,60 @@ OpenSSH lấy **giá trị đầu tiên** cho mỗi keyword, không phải giá 
 
 > Bỏ qua bước này là cách phổ biến nhất để **tưởng đã harden xong** trong khi password auth vẫn mở. File drop-in tồn tại, nội dung đúng, và bị bỏ qua hoàn toàn.
 
+**Đã đo trên macOS 15.7.9 (23/09/2026):**
+
+```
+18:Include /etc/ssh/sshd_config.d/*
+```
+
+Đó là dòng **duy nhất** khớp — không `PasswordAuthentication`, `PermitRootLogin` hay `KbdInteractive` nào đứng trước. → **dùng 4.2a**.
+
+Thư mục đã có sẵn một tệp:
+
+```
+/etc/ssh/sshd_config.d/100-macos.conf
+    UsePAM yes
+    AcceptEnv LANG LC_*
+    Subsystem sftp /usr/libexec/sftp-server
+```
+
+Hai điều rút ra:
+
+- Glob `*` đọc theo thứ tự từ điển: `100-local.conf` < `100-macos.conf`, nên tệp của bạn đọc trước và **thắng** ở mọi keyword trùng.
+- `UsePAM yes` là lý do `KbdInteractiveAuthentication no` **bắt buộc** chứ không tuỳ chọn: PAM mở keyboard-interactive như một đường riêng mà `PasswordAuthentication no` không đóng được.
+
 ### 4.2a Drop-in (khi `Include` ở đầu file)
 
+**Soạn tệp trên Fedora, đẩy sang, rồi mới `install`** — thay vì dán heredoc trực tiếp trên Mac. Đây là bước khoá được mình ra ngoài, nên đáng tách phần "soạn nội dung" (gõ sai thì vô hại) khỏi phần "áp vào hệ thống".
+
 ```bash
-sudo mkdir -p /etc/ssh/sshd_config.d
-sudo tee /etc/ssh/sshd_config.d/100-local.conf >/dev/null <<'CONF'
+# ── trên FEDORA ──
+cat > /tmp/100-local.conf <<'CONF'
 PubkeyAuthentication yes
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitRootLogin no
-AllowUsers YOUR_USERNAME
+AllowUsers <macuser>
 MaxAuthTries 3
 LoginGraceTime 20
 ClientAliveInterval 30
 ClientAliveCountMax 3
 CONF
+scp /tmp/100-local.conf mac-cmp-file:~/
 ```
 
-Ưu điểm: bản update macOS không ghi đè file này.
+```bash
+# ── trên MAC ──
+sudo mkdir -p /etc/ssh/sshd_config.d
+sudo install -o root -g wheel -m 644 ~/100-local.conf /etc/ssh/sshd_config.d/100-local.conf
+rm ~/100-local.conf
+```
+
+`install` đặt owner và mode trong một bước. Không phải trang trí: **sshd từ chối đọc file cấu hình mà user thường ghi được**. Copy bằng `cp` để nguyên chủ sở hữu `<macuser>` là sshd bỏ qua nó.
+
+Lấy `<macuser>` từ `whoami` trên Mac, đừng gõ từ trí nhớ — `AllowUsers` sai là tự khoá.
+
+Ưu điểm của drop-in: bản update macOS không ghi đè file này.
 
 ### 4.2b Sửa trực tiếp (khi không có `Include`, hoặc nó ở cuối)
 
@@ -559,32 +598,64 @@ Bản update macOS lớn có thể ghi đè file này. **Kiểm tra lại sau m�
 
 Thay `YOUR_USERNAME` trước khi chạy.
 
-```bash
-sudo sshd -T >/dev/null && echo "syntax OK"
-sudo launchctl kickstart -k system/com.openssh.sshd
+**Không cần restart sshd.** Tài liệu cũ có `launchctl kickstart -k system/com.openssh.sshd`; đó là thói quen mang từ Linux sang. Trên macOS job này là socket-activated:
+
+```
+system/com.openssh.sshd = {
+    active count = 0
+    state = not running
+    sockets = { 39, 41 }
+    properties = … | inetd-compatible | abandon process group
+}
 ```
 
-`kickstart` báo lỗi service không tồn tại → tắt/bật lại Remote Login trong System Settings.
+`state = not running` — không có tiến trình nào để khởi động lại. launchd giữ socket, và mỗi kết nối mới sinh một `sshd-session` đọc cấu hình từ đầu. **Hiệu lực ngay ở kết nối kế tiếp.**
 
-**Xác minh bằng kết quả thật, không tin file config:**
+Một lệnh vừa kiểm cú pháp vừa in ra cấu hình hiệu lực:
 
 ```bash
-sudo sshd -T | grep -E '^(passwordauthentication|permitrootlogin|allowusers|pubkeyauthentication)'
+# ── trên MAC ──
+sudo sshd -T | grep -E '^(pubkeyauthentication|passwordauthentication|kbdinteractiveauthentication|maxauthtries|allowusers)'
 ```
 
-Phải thấy `passwordauthentication no`. Thấy `yes` → config bị directive phía trên ghi đè, quay lại 4.1.
+Phải thấy đúng năm dòng:
+
+```
+pubkeyauthentication yes
+passwordauthentication no
+kbdinteractiveauthentication no
+maxauthtries 3
+allowusers <macuser>
+```
+
+`sshd -T` phân tích **toàn bộ** cấu hình gồm cả các file `Include`, nên nó là nguồn sự thật — không phải nội dung file bạn vừa ghi. Thấy `passwordauthentication yes` → có directive phía trên ghi đè, quay lại 4.1.
 
 ### 4.4 Test rồi mới đóng tab
 
 Connect từ **mọi client** bạn đã cấu hình. **Chỉ đóng tab iTerm2 sau khi tất cả vào được.**
 
+**Kiểm chứng mạnh nhất là từ bên ngoài**, vì nó đo hành vi thật của server chứ không đọc file:
+
+```bash
+# ── trên FEDORA ──
+ssh -o PreferredAuthentications=none probe@macos-comacpro 2>&1 | grep -i denied
+```
+
+| Kết quả | Nghĩa |
+|---|---|
+| `Permission denied (publickey)` | ✅ xong — password và keyboard-interactive đã tắt |
+| `(publickey,password,keyboard-interactive)` | ❌ chưa ăn, quay lại 4.1 |
+
+Đo được ngày 23/09/2026: trước là `publickey,password,keyboard-interactive`, sau là `publickey`.
+
 Rollback, chạy trong tab đang mở:
 
 ```bash
+# ── trên MAC ──
 sudo rm /etc/ssh/sshd_config.d/100-local.conf
-# hoặc:  sudo cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
-sudo launchctl kickstart -k system/com.openssh.sshd
 ```
+
+Không cần restart — kết nối kế tiếp trở lại như cũ ngay.
 
 ---
 
@@ -1369,7 +1440,7 @@ Bước 3 và 4 chứng minh tmux thực sự làm được việc của nó. B�
 [ ]  2  Fedora: ssh-add -t 8h; kiểm key nào thật sự mở khoá bằng SSH_AUTH_SOCK=/run/user/1000/gcr/.ssh ssh-add -l
 [ ]  2  Fedora: KHÔNG bật ForwardAgent; dựng git identity riêng trên Mac nếu định commit ở đó
 [ ]  3  (tuỳ chọn) iPhone: Tailscale, tắt sync Termius, key, host
-[ ]  4  grep Include → viết config → sshd -T xác minh → test MỌI client → đóng tab
+[ ]  4  grep Include → scp+install drop-in → sshd -T → kiểm từ Fedora → đóng tab
 [ ]  5  Mac: tmux + .tmux.conf
 [ ]  6  Fedora: tailscale set --shields-up
 [ ]  7  git remote sang SSH; app GUI chạy sẵn
@@ -1594,7 +1665,7 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 
 | Điểm | Cách tự kiểm tra |
 |---|---|
-| `Include` có trong `sshd_config` của macOS 15 không, và ở dòng nào | `grep` ở Phase 4.1 |
+| ~~`Include` có trong `sshd_config` của macOS 15 không~~ — **đã xác minh 23/09/2026: có, dòng 18**, không directive nào đứng trước | Đã ghi vào [4.1](#41-xác-định-nơi-ghi-config) |
 | Nhãn menu trong System Settings có thể khác giữa các bản 15.x | Nhìn màn hình |
 | Nhãn `launchctl` cho screensharing (Phụ lục C.2) | `sudo lsof -iTCP:5900 -sTCP:LISTEN` sau khi chạy |
 | ~~Taildrop có bị ACL Phase 6 chặn không~~ — **đã biết:** `--shields-up` chặn chiều *nhận*, xem [6.4](#64-đánh-đổi) | `tailscale file cp` tới máy này sau khi bật shields |
@@ -1606,6 +1677,33 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 ---
 
 ## Thay đổi trong v4.1
+
+### v5.3 — Phase 4 chạy thật: bỏ một bước thừa, sửa một lời giải thích sai
+
+Harden sshd trên `macos-comacpro` ngày 23/09/2026. Kết quả đo từ bên ngoài:
+
+```
+trước:  Permission denied (publickey,password,keyboard-interactive)
+sau:    Permission denied (publickey)
+```
+
+| | v5.2 | v5.3 |
+|---|---|---|
+| §4.1 `Include` | "chưa xác minh" | **Dòng 18**, không directive nào đứng trước → nhánh 4.2a. Kèm nội dung `100-macos.conf` có sẵn |
+| §4.2a ghi file | `sudo tee` heredoc trên Mac | Soạn trên Fedora → `scp` → `sudo install -o root -g wheel -m 644` |
+| §4.3 restart | `sudo launchctl kickstart -k` | **Bỏ** — không cần trên macOS |
+| §4.4 xác minh | chỉ `sshd -T` | Thêm kiểm từ Fedora bằng `PreferredAuthentications=none` |
+| Cảnh báo đường lui | "chỉ listener khởi động lại" | Sai cơ chế — sửa lại |
+
+**Vì sao không cần restart.** Job `com.openssh.sshd` là socket-activated: `state = not running`, `active count = 0`, `properties = inetd-compatible | abandon process group`. launchd giữ socket port 22 và sinh một `sshd-session` mới cho mỗi kết nối, tiến trình đó đọc cấu hình từ đầu. Không có listener nào tồn tại để khởi động lại.
+
+**Vì sao đường lui vẫn vững.** `abandon process group` — launchd cố ý không quản tiến trình con đã sinh. Cây tiến trình xác nhận: phiên đang mở có cha là PID 1, không phải một sshd mẹ. Kết luận của tài liệu cũ đúng, lý do thì sai.
+
+**`UsePAM yes` trong `100-macos.conf`** là lý do `KbdInteractiveAuthentication no` bắt buộc chứ không tuỳ chọn — PAM mở keyboard-interactive như đường riêng mà `PasswordAuthentication no` không đóng. Sau khi áp, `keyboard-interactive` biến mất khỏi danh sách server chào, chứng minh dòng đó có tác dụng thật.
+
+**`install` thay `cp`:** sshd từ chối đọc file cấu hình mà user thường ghi được, nên owner/mode phải khai tường minh.
+
+---
 
 ### v5.2 — preflight chạy thật trên macOS, lộ 3 lỗi
 
