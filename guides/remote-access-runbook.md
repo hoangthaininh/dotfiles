@@ -1,6 +1,6 @@
 # Remote access: điều khiển máy công ty (macOS) từ xa — Runbook
 
-**Phiên bản:** v5.6 · 23/09/2026 · [nhật ký thay đổi](#nhật-ký-thay-đổi)
+**Phiên bản:** v5.7 · 23/09/2026 · [nhật ký thay đổi](#nhật-ký-thay-đổi)
 **Máy đích:** macOS 15, Intel Core i5 (máy công ty) · iTerm2 tại bàn
 **Client:** Fedora 44 (máy cá nhân, đường chính) · iPhone (tuỳ chọn)
 
@@ -22,6 +22,8 @@ Setup đã chạy và được kiểm chứng đầu-cuối. Bảng này để b
 | 8 Preflight | ✅ | `~/bin/preflight` → `SẴN SÀNG`, exit 0 |
 | 9 Bảo mật | ✅ phần lớn | LUKS ✓ · khoá màn hình 5 phút ✓ · shields ✓ |
 | 10 Bom hẹn giờ | ✅ | auto-update tắt · `sleep 0` · timer cảnh báo key expiry |
+
+**Một việc đáng làm, chưa làm:** cắm **Ethernet** cho Mac. Nó đang chạy Wi-Fi, và đo được jitter **62ms** giữa hai máy cùng LAN (gateway chỉ 5ms) — đó là độ nhão bạn cảm thấy ở mỗi phím gõ trong tmux. Chi phí: một sợi cáp. Xem [10.3](#103-mac-ngủ--vấn-đề-vận-hành-chính).
 
 **Hai thứ còn hở, không gấp:**
 
@@ -1436,15 +1438,70 @@ tailscale status | grep macos-comacpro
 
 Đây chính là việc `preflight` ở [Phase 8](#phase-8--preflight) làm. Nếu chưa cài Phase 8, đó là mảnh ghép thiếu có giá trị cao nhất trong toàn bộ setup này.
 
-**Ba hướng xử lý, mỗi hướng một giá:**
+### Đã chốt: `sleep 0`, và **không** xây Wake-on-LAN
 
-| Hướng | Được | Mất |
-|---|---|---|
-| `sudo pmset -a sleep 0` trên Mac | Luôn với tới được | Máy công ty chạy 24/7, tốn điện, có thể trái chính sách IT |
-| `caffeinate -s` trước khi rời bàn | Chỉ tỉnh khi cần | Phải nhớ; quên là mất truy cập cả ngày |
-| Kiểm `tailscale status` trước khi kết nối | Không đổi gì trên máy công ty | Không truy cập được ngoài ý muốn |
+```bash
+# ── trên MAC ──
+sudo pmset -a sleep 0          # máy không ngủ
+sudo pmset -a displaysleep 10  # màn hình vẫn tắt — đây mới là phần tiết kiệm thật
+```
 
-Đổi chính sách nguồn trên tài sản của công ty là việc nên hỏi IT trước. Hướng 3 là mặc định hợp lý; hướng 2 dùng cho hôm nào biết trước sẽ cần truy cập từ xa.
+Áp 23/09/2026. Xác minh bằng cách **gỡ `caffeinate`** rồi để yên một tiếng: Mac vẫn online, `ssh` trả lời trong 0 giây. Trước đó là `offline, last seen 5m ago` và timeout 130 giây.
+
+Điểm quan trọng: setup không còn phụ thuộc việc bạn **nhớ** chạy `--arm`. `preflight --arm` từ bắt buộc xuống tuỳ chọn.
+
+#### Vì sao không bật sleep rồi đánh thức từ xa
+
+Đây là câu hỏi ai cũng hỏi, nên ghi lại kết luận cùng số đo thay vì suy luận lại từ đầu.
+
+**Cái được rất nhỏ.** Mac mini cắm điện: ngủ tiết kiệm vài watt, cỡ 30–40 kWh/năm. Không đáng kể.
+
+**Cái mất là cả một nhóm chế độ hỏng.** Đo trên máy này:
+
+| Điều kiện | Kết quả |
+|---|---|
+| `en0` Ethernet | **inactive** — máy chạy Wi-Fi (`en1`) |
+| Wake-on-LAN qua Wi-Fi trên macOS | Cần **Bonjour Sleep Proxy** trong LAN; quét không thấy cái nào |
+| Private Wi-Fi Address | MAC đang dùng `72:e5:…` khác MAC phần cứng `38:f9:…`, và có thể xoay → magic packet nhắm ai? |
+| Magic packet | Gói **layer 2**, không qua router. Chỉ gửi được khi client ở **cùng LAN** — mang laptop về nhà là hết |
+| `powernap 1` + `tcpkeepalive 1` | Máy tỉnh định kỳ, Tailscale nối lại vài giây rồi ngủ tiếp → **khả dụng ngắt quãng** |
+
+Dòng cuối là điều tệ nhất: **khả dụng ngắt quãng còn tệ hơn tắt hẳn**, vì bạn không biết lúc nào dùng được.
+
+Và điều quyết định: **Tailscale không đánh thức được máy.** Gói đánh thức phải do một thiết bị **trong cùng LAN với Mac** gửi. Traffic từ internet chỉ tới router; Mac đang ngủ thì đã rớt khỏi tailnet.
+
+Muốn có WoL thật thì cần một máy luôn bật trong LAN văn phòng làm trạm trung chuyển — tức thêm một hệ thống phải bảo trì, để giải quyết một vấn đề mà `sleep 0` xoá bỏ miễn phí.
+
+> **Nếu đổi `pmset` trên máy công ty là vấn đề chính sách**, dùng `preflight --arm` trước khi rời bàn (bật `caffeinate` 8 tiếng) và `macup` trước khi kết nối. Kém tin cậy hơn vì phụ thuộc trí nhớ, nhưng không đụng cấu hình hệ thống.
+
+#### Việc đáng làm hơn: cắm dây mạng
+
+Mac mini có cổng Ethernet đang bỏ trống. Đo chất lượng đường Wi-Fi hiện tại, hai máy **cùng LAN**:
+
+| Đích | avg | max | jitter |
+|---|---|---|---|
+| Fedora → gateway `192.168.1.1` | 8ms | 25ms | 5ms |
+| Fedora → Mac `192.168.1.63` | **78ms** | **230ms** | **62ms** |
+
+Cùng card Wi-Fi Fedora, cùng thời điểm. Gateway trả lời nhanh gấp 10 lần và ổn định gấp 12 lần → **độ trễ nằm ở phía Mac**, là Wi-Fi power management của nó, không phải đường truyền.
+
+Jitter 62ms nghĩa là trong phiên tmux tương tác, mỗi phím gõ hiện ra sau 8ms tới 230ms. Không hỏng, nhưng nhão — và đây thường bị đổ nhầm cho "SSH lag".
+
+Cắm Ethernet được ba thứ cùng lúc:
+
+- Độ trễ dưới 1ms, jitter gần bằng không
+- Bỏ một lớp phụ thuộc: AP reboot, nhiễu kênh, roaming
+- Card Ethernet vẫn có điện khi ngủ → **WoL trở nên khả thi thật**, không cần sleep proxy
+
+Chi phí: một sợi cáp.
+
+#### Điểm yếu còn lại — không phải sleep, mà là reboot
+
+Mac reboot vì bất cứ lý do gì thì dừng ở màn hình **FileVault pre-boot**: không mạng, không SSH, không Tailscale. **Không có đường phục hồi từ xa.**
+
+Tắt auto-update ([10.1](#101-macos-tự-update-rồi-reboot)) đã bỏ được nguyên nhân phổ biến nhất. Phần còn lại — mất điện, kernel panic — là rủi ro chấp nhận được với máy văn phòng có người lui tới. Nhưng hãy **biết** đường phục hồi là "nhờ ai đó tới gõ mật khẩu", đừng phát hiện điều đó lúc đang cần.
+
+Đừng tắt FileVault để né. Đó là máy công ty, và đánh đổi sai hướng.
 
 > `ConnectTimeout 10` ở [2.5](#25-sshconfig) chỉ làm thất bại **nhanh hơn** (130 giây → 10 giây). Nó không giúp bạn kết nối được. Đừng nhầm hai việc.
 
@@ -1754,6 +1811,33 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 ---
 
 ## Nhật ký thay đổi
+
+### v5.7 — chốt quyết định sleep, kèm số đo
+
+Phase 10.3 trước đây đưa ba hướng và để người đọc tự chọn. Giờ đã chạy thật nên chốt được, và ghi lại **số đo** thay vì lập luận — sáu tháng nữa đọc lại, con số trả lời nhanh hơn.
+
+**Chốt `sleep 0`, không xây WoL.** Lý do đo được, không suy đoán:
+
+| | |
+|---|---|
+| `en0` Ethernet | inactive — Mac chạy Wi-Fi |
+| WoL qua Wi-Fi trên macOS | cần Bonjour Sleep Proxy; quét không thấy |
+| Private Wi-Fi Address | MAC đang dùng khác MAC phần cứng, có thể xoay |
+| Magic packet | layer 2, không qua router — chỉ gửi được khi cùng LAN |
+| `powernap` + `tcpkeepalive` | máy tỉnh định kỳ → **khả dụng ngắt quãng**, tệ hơn tắt hẳn |
+
+**Thêm khuyến nghị cắm Ethernet**, với số đo làm bằng chứng:
+
+```
+Fedora → gateway   avg   8ms · max  25ms · jitter  5ms
+Fedora → Mac       avg  78ms · max 230ms · jitter 62ms
+```
+
+Cùng card Wi-Fi, cùng lúc, cùng LAN. Chênh lệch nằm ở phía Mac — Wi-Fi power management. Jitter 62ms là thứ bạn cảm thấy ở mỗi phím gõ trong tmux.
+
+**Nêu rõ điểm yếu còn lại là reboot, không phải sleep:** FileVault pre-boot, không có đường phục hồi từ xa.
+
+---
 
 ### v5.6 — Phase 5 có config thật
 
