@@ -1,6 +1,6 @@
 # Remote access: điều khiển máy công ty (macOS) từ xa — Runbook
 
-**Phiên bản:** v5.7 · 23/09/2026 · [nhật ký thay đổi](#nhật-ký-thay-đổi)
+**Phiên bản:** v5.8 · 23/09/2026 · [nhật ký thay đổi](#nhật-ký-thay-đổi)
 **Máy đích:** macOS 15, Intel Core i5 (máy công ty) · iTerm2 tại bàn
 **Client:** Fedora 44 (máy cá nhân, đường chính) · iPhone (tuỳ chọn)
 
@@ -1157,20 +1157,13 @@ else
   bad "đang chạy pin — cắm sạc, nếu không máy sẽ ngủ"
 fi
 
-if pgrep -x caffeinate >/dev/null 2>&1; then
-  ok "caffeinate đang chạy"
-elif (( ARM )); then
-  # nohup: over `ssh host <cmd>` the channel closes as soon as the script exits.
-  # Without it caffeinate takes the SIGHUP and dies with the session — precisely
-  # when you just asked it to keep the machine awake.
-  nohup caffeinate -dims -t "$CAFFEINATE_SECONDS" >/dev/null 2>&1 &
-  disown
-  act "đã bật caffeinate (${CAFFEINATE_SECONDS}s)"
-else
-  warn "caffeinate chưa chạy — máy có thể ngủ. Dùng --arm để bật"
-fi
-
+# Read the sleep policy FIRST: it decides whether caffeinate matters at all.
+# Reporting them the other way round produced a contradiction on a healthy
+# machine — "caffeinate chưa chạy … máy có thể ngủ" printed directly above
+# "system sleep: tắt". A monitor that cries wolf is a monitor people stop
+# reading, so the caffeinate check now stays quiet when it has nothing to add.
 DSLEEP=$(pmset -g 2>/dev/null | awk '/^[[:space:]]*sleep/{print $2; exit}')
+
 if [[ -z "$DSLEEP" ]]; then
   skip "system sleep (không đọc được pmset)"
 elif [[ "$DSLEEP" == "0" ]]; then
@@ -1181,6 +1174,23 @@ elif (( DSLEEP <= 5 )); then
   bad "system sleep sau ${DSLEEP} phút — quá ngắn, máy rơi khỏi tailnet gần như ngay lập tức"
 else
   warn "system sleep sau ${DSLEEP} phút — máy sẽ rơi khỏi tailnet"
+fi
+
+if pgrep -x caffeinate >/dev/null 2>&1; then
+  ok "caffeinate đang chạy"
+elif [[ "$DSLEEP" == "0" ]]; then
+  # sleep is off at the policy level, so caffeinate would add nothing. Not a
+  # warning — this is the configuration we actually want.
+  skip "caffeinate (không cần — system sleep đã tắt)"
+elif (( ARM )); then
+  # nohup: over `ssh host <cmd>` the channel closes as soon as the script exits.
+  # Without it caffeinate takes the SIGHUP and dies with the session — precisely
+  # when you just asked it to keep the machine awake.
+  nohup caffeinate -dims -t "$CAFFEINATE_SECONDS" >/dev/null 2>&1 &
+  disown
+  act "đã bật caffeinate (${CAFFEINATE_SECONDS}s)"
+else
+  warn "caffeinate chưa chạy — máy có thể ngủ. Dùng --arm để bật"
 fi
 
 # Auto-installed macOS update => reboot => FileVault pre-boot screen => the
@@ -1811,6 +1821,30 @@ Nêu ra để bạn không tin nhầm. Mỗi dòng kèm cách tự kiểm tra.
 ---
 
 ## Nhật ký thay đổi
+
+### v5.8 — preflight: bỏ một báo động giả
+
+Sau khi chốt `sleep 0`, preflight in ra hai dòng mâu thuẫn nhau ngay cạnh nhau trên một máy hoàn toàn khoẻ:
+
+```
+warn  caffeinate chưa chạy — máy có thể ngủ. Dùng --arm để bật
+ok    system sleep: tắt
+```
+
+Nguyên nhân: script kiểm `caffeinate` **trước** khi biết `sleep` đã tắt. Mà `sleep 0` thì `caffeinate` là thừa.
+
+Đảo thứ tự, và thêm nhánh `skip` khi sleep đã tắt:
+
+```
+ok    system sleep: tắt
+skip  caffeinate (không cần — system sleep đã tắt)
+```
+
+`--arm` cũng không còn bật `caffeinate` vô ích nữa, nhưng vẫn tạo tmux session như cũ — đã kiểm cả hai.
+
+Lý do đáng sửa nằm ở chỗ khác chứ không phải thẩm mỹ: **một công cụ giám sát hay báo động giả là công cụ người ta thôi đọc.** Rồi tới lúc nó cảnh báo thật thì không ai để ý.
+
+---
 
 ### v5.7 — chốt quyết định sleep, kèm số đo
 
